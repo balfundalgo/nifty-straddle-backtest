@@ -246,7 +246,7 @@ class GridSearchPanel(ctk.CTkScrollableFrame):
 
     def _row(self, parent, label, placeholder, initial, row):
         param_label(parent, label).grid(row=row, column=0, sticky="w",
-                                        padx=(0, 16), pady=4, minsize=200)
+                                        padx=(0, 16), pady=4)
         e = make_entry(parent, width=260, placeholder=placeholder, initial=initial)
         e.grid(row=row, column=1, sticky="w", pady=4)
         return e
