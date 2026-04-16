@@ -8,7 +8,7 @@ import sys
 import os
 import threading
 import queue
-import subprocess
+import io
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -16,6 +16,17 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+
+
+# ─── stdout redirector → routes print() into the log queue ───────────────────
+class _QueueStream:
+    def __init__(self, q):
+        self._q = q
+    def write(self, text):
+        if text:
+            self._q.put(("log", text))
+    def flush(self):
+        pass
 
 # ─── Balfund Brand Colors ────────────────────────────────────────────────────
 NAVY      = "#0D1B2A"
@@ -246,7 +257,7 @@ class GridSearchPanel(ctk.CTkScrollableFrame):
 
     def _row(self, parent, label, placeholder, initial, row):
         param_label(parent, label).grid(row=row, column=0, sticky="w",
-                                        padx=(0, 16), pady=4)
+                                        padx=(0, 16), pady=4, minsize=200)
         e = make_entry(parent, width=260, placeholder=placeholder, initial=initial)
         e.grid(row=row, column=1, sticky="w", pady=4)
         return e
@@ -419,9 +430,9 @@ class App(ctk.CTk):
         self.minsize(1050, 700)
         self.configure(fg_color=NAVY)
 
-        self._running = False
-        self._proc    = None
-        self._q       = queue.Queue()
+        self._running         = False
+        self._stop_requested  = False
+        self._q               = queue.Queue()
 
         self._build_ui()
         self.after(100, self._poll_queue)
@@ -618,8 +629,6 @@ class App(ctk.CTk):
         if not from_d or not to_d:
             messagebox.showwarning("Missing dates", "Please enter From and To dates.")
             return
-
-        # Validate dates
         try:
             datetime.strptime(from_d, "%Y-%m-%d")
             datetime.strptime(to_d,   "%Y-%m-%d")
@@ -627,72 +636,157 @@ class App(ctk.CTk):
             messagebox.showerror("Invalid date", "Dates must be YYYY-MM-DD format.")
             return
 
-        # Build command
-        script = Path(__file__).parent / "main.py"
         data_path = self.data_path_var.get().strip()
-        cmd = [sys.executable, str(script),
-               "--data-path", data_path]
 
         if mode == "single":
             try:
                 sp = self.single_panel.get_params()
             except ValueError as e:
                 messagebox.showerror("Invalid parameters", str(e)); return
+            self._start_thread("single", from_d, to_d, data_path, sp=sp)
 
-            cmd += ["single",
-                    "--from", from_d, "--to", to_d,
-                    "--atm-start", sp["atm_scan_start"],
-                    "--atm-end",   sp["atm_scan_end"],
-                    "--eod",       sp["eod_exit_time"],
-                    "--atr-tf",    sp["atr_timeframe"],
-                    "--atr-period", str(sp["atr_period"]),
-                    "--atr-mult",  str(sp["atr_multiplier"]),
-                    "--hedge-pct", str(sp["hedge_pct"]),
-                    "--trail-step",str(sp["hedge_trail_step"]),
-                    ]
         elif mode == "grid":
             try:
                 gc = self.grid_panel.get_grid_config()
             except ValueError as e:
                 messagebox.showerror("Invalid grid config", str(e)); return
-            cmd += ["grid", "--from", from_d, "--to", to_d]
-            if gc.get("fast_mode"):
-                cmd.append("--fast")
-        else:
-            cmd += ["stats", "--from", from_d, "--to", to_d]
+            self._start_thread("grid", from_d, to_d, data_path, gc=gc)
 
-        self._start_process(cmd)
+        else:
+            self._start_thread("stats", from_d, to_d, data_path)
 
     def _on_stop(self):
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
-            self.log.append("\n⛔ Stopped by user.\n")
+        self._stop_requested = True
+        self.log.append("\n⛔ Stop requested — will finish current day then exit.\n")
         self._set_idle()
 
-    def _start_process(self, cmd):
-        self._running = True
+    def _start_thread(self, mode, from_d, to_d, data_path, sp=None, gc=None):
+        self._running        = True
+        self._stop_requested = False
         self.run_btn.configure(state="disabled", fg_color=BORDER)
         self.stop_btn.configure(state="normal")
         self.status_lbl.configure(text="● Running…", text_color=GREEN)
-        self.log.append(f"\n{'─'*60}\n▶  {' '.join(cmd)}\n{'─'*60}\n")
+        self.log.append(f"\n{'─'*60}\n▶  {mode.upper()}  {from_d} → {to_d}\n{'─'*60}\n")
 
         def target():
+            old_stdout = sys.stdout
+            sys.stdout = _QueueStream(self._q)
             try:
-                self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                    cwd=str(Path(__file__).parent)
-                )
-                for line in self._proc.stdout:
-                    self._q.put(("log", line))
-                self._proc.wait()
-                rc = self._proc.returncode
-                self._q.put(("done", rc))
+                # Add project folder to path so imports resolve inside EXE
+                proj = str(Path(__file__).parent)
+                if proj not in sys.path:
+                    sys.path.insert(0, proj)
+
+                from config      import StrategyParams, GridConfig
+                from data_loader import DataLoader, PathConfig
+                from day_simulator import DaySimulator
+                from metrics     import compute_metrics
+                from report      import generate_report
+                import pandas as pd
+
+                paths = PathConfig(base_path=data_path)
+
+                if mode == "stats":
+                    loader = DataLoader(paths)
+                    loader.stats(from_date=from_d, to_date=to_d)
+                    self._q.put(("done", 0))
+                    return
+
+                # ── Single run ──────────────────────────────────────────
+                if mode == "single":
+                    params = StrategyParams()
+                    for k, v in (sp or {}).items():
+                        if hasattr(params, k):
+                            setattr(params, k, v)
+
+                    print(f"\n{'='*60}")
+                    print(f"  SINGLE BACKTEST RUN")
+                    print(f"  {from_d} → {to_d}")
+                    print(f"  Params: {params}")
+                    print(f"{'='*60}\n")
+
+                    loader = DataLoader(paths)
+                    loaded = loader.preload_all(from_d, to_d)
+                    if not loaded:
+                        print(f"No valid data found for {from_d} – {to_d}")
+                        self._q.put(("done", 1)); return
+
+                    sim     = DaySimulator(params)
+                    results = []
+                    for date_str, day in loaded:
+                        if self._stop_requested: break
+                        res  = sim.simulate(day)
+                        icon = "✅" if res.status == "ok" else "⚠️ "
+                        print(f"  {date_str}  {icon}  PnL={res.total_pnl:>10,.2f}  "
+                              f"ATM={res.atm_strike}  "
+                              f"CE={res.ce_exit_reason or '-'}  "
+                              f"PE={res.pe_exit_reason or '-'}")
+                        results.append(res)
+
+                    m = compute_metrics(results, params.to_dict())
+                    self._print_metrics(m)
+                    generate_report(
+                        pd.DataFrame([m]), results,
+                        output_path=f"single_run_{from_d}_{to_d}.xlsx"
+                    )
+
+                # ── Grid search ─────────────────────────────────────────
+                elif mode == "grid":
+                    from grid_runner import GridRunner
+                    grid = GridConfig()
+                    if gc:
+                        for k, v in gc.items():
+                            if k != "fast_mode" and hasattr(grid, k):
+                                setattr(grid, k, v)
+                    if gc and gc.get("fast_mode"):
+                        grid.atr_timeframes  = ["5min"]
+                        grid.atr_periods     = [14]
+                        grid.atr_multipliers = [1.0, 1.5]
+                        grid.eod_exit_times  = ["15:20"]
+
+                    total = grid.total_combinations()
+                    print(f"\n{'='*60}")
+                    print(f"  GRID SEARCH  —  {total:,} combinations")
+                    print(f"  {from_d} → {to_d}")
+                    print(f"{'='*60}\n")
+
+                    runner     = GridRunner(paths, grid)
+                    run_result = runner.run(from_date=from_d, to_date=to_d)
+                    run_result.print_summary(n=20)
+
+                    best_params = run_result.best_params()
+                    loader      = DataLoader(paths)
+                    loaded      = loader.preload_all(from_d, to_d)
+                    sim         = DaySimulator(best_params)
+                    best_daily  = [sim.simulate(day) for _, day in loaded]
+                    generate_report(
+                        run_result.ranked, best_daily,
+                        output_path=f"grid_search_{from_d}_{to_d}.xlsx"
+                    )
+
+                self._q.put(("done", 0))
+
             except Exception as exc:
-                self._q.put(("log", f"\nERROR: {exc}\n"))
+                import traceback
+                self._q.put(("log", f"\nERROR: {exc}\n{traceback.format_exc()}\n"))
                 self._q.put(("done", -1))
+            finally:
+                sys.stdout = old_stdout
 
         threading.Thread(target=target, daemon=True).start()
+
+    @staticmethod
+    def _print_metrics(m: dict):
+        print(f"\n{'─'*50}")
+        print(f"  Total P&L:         ₹{m.get('total_pnl', 0):>12,.2f}")
+        print(f"  Traded days:       {m.get('traded_days', 0)}")
+        print(f"  Win rate:          {m.get('win_rate_pct', 0):.1f}%")
+        print(f"  Avg daily P&L:     ₹{m.get('avg_daily_pnl', 0):>12,.2f}")
+        print(f"  Sharpe (annual):   {m.get('sharpe', 0):.3f}")
+        print(f"  Max drawdown:      ₹{m.get('max_drawdown', 0):>12,.2f}")
+        print(f"  Profit factor:     {m.get('profit_factor', 0):.3f}")
+        print(f"  Max consec losses: {m.get('max_consec_losses', 0)}")
+        print(f"{'─'*50}\n")
 
     def _poll_queue(self):
         try:
