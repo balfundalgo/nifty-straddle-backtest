@@ -56,14 +56,17 @@ def run_backtest(cfg: dict,
     print(f"{'═'*52}")
 
     # Load data
-    print("\n⏳ Loading data...")
+    # Load data — pass live callbacks so GUI console shows progress in real time
     loader = DataLoader(paths)
-    loaded = loader.preload_all(from_date, to_date)
+    loaded = loader.preload_all(
+        from_date, to_date,
+        log_fn=lambda msg: print(msg),
+        progress_fn=progress_fn,
+    )
     if not loaded:
         print(f"❌ No valid data found for {from_date} – {to_date}")
         return None
 
-    print(f"✅ Loaded {len(loaded)} valid trading days\n")
     progress_fn(0.1)
 
     # ── Single Run ────────────────────────────────────────────────────────
