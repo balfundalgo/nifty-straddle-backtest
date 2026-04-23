@@ -103,6 +103,11 @@ class DaySimulator:
             result.notes  = "No ATM strike found within premium diff limit"
             return result
 
+        # Detect fallback marker embedded in entry_time string
+        if entry_time and "|FALLBACK" in entry_time:
+            entry_time      = entry_time.replace("|FALLBACK", "")
+            result.notes    = "ATM_FALLBACK: spot-based strike used (premium diff not met)"
+
         result.atm_strike = atm_strike
         result.ce_entry   = ce_prem
         result.pe_entry   = pe_prem
@@ -156,161 +161,262 @@ class DaySimulator:
 
     def _simulate_loop(self, result, entry_time, ce_series, pe_series,
                        ceh_series, peh_series) -> DayResult:
-        eod_ts = pd.Timestamp(f"{result.date} {self.p.eod_exit_time}")
+        """
+        Vectorized 1-second simulation using numpy array operations.
 
-        ce_open  = True;  pe_open  = True
-        ceh_open = not ceh_series.empty
-        peh_open = not peh_series.empty
+        Key speedup: instead of a Python loop over every second, we use
+        numpy to find the FIRST second a price breaches SL — this is a
+        single array operation (np.argmax) regardless of how many seconds
+        are in the day.
 
-        ce_sl = result.ce_sl;  pe_sl = result.pe_sl
-        ce_in_trail = False;   pe_in_trail = False
-        ce_atr_sl = ce_sl;     pe_atr_sl = pe_sl
+        ATR trailing: resampled to ATR timeframe, then SL updated every
+        N seconds (once per ATR candle), not every single second.
+        """
+        import numpy as np
 
-        ce_hedge_max = result.ce_hedge_entry or 0.0
-        pe_hedge_max = result.pe_hedge_entry or 0.0
+        eod_ts   = pd.Timestamp(f"{result.date} {self.p.eod_exit_time}")
+        date_str = result.date
 
-        ce_buf: List[dict] = []
-        pe_buf: List[dict] = []
+        # Slice to [entry_time, EOD] window
+        entry_ts = pd.Timestamp(f"{date_str} {entry_time}")
+        ce  = ce_series[(ce_series.index >= entry_ts) & (ce_series.index <= eod_ts)]
+        pe  = pe_series[(pe_series.index >= entry_ts) & (pe_series.index <= eod_ts)]
+        ceh = ceh_series[(ceh_series.index >= entry_ts) & (ceh_series.index <= eod_ts)]               if not ceh_series.empty else pd.DataFrame()
+        peh = peh_series[(peh_series.index >= entry_ts) & (peh_series.index <= eod_ts)]               if not peh_series.empty else pd.DataFrame()
 
-        all_times = _build_timeline(ce_series, entry_time, eod_ts)
+        if ce.empty or pe.empty:
+            return result
 
-        for ts in all_times:
-            is_eod   = (ts >= eod_ts)
-            time_str = ts.strftime("%H:%M")
+        ce_sl = result.ce_sl
+        pe_sl = result.pe_sl
 
-            ce_close  = _get_close(ce_series,  ts)
-            pe_close  = _get_close(pe_series,  ts)
-            ce_high   = _get_high(ce_series,   ts)
-            pe_high   = _get_high(pe_series,   ts)
-            ceh_close = _get_close(ceh_series, ts) if ceh_open else None
-            peh_close = _get_close(peh_series, ts) if peh_open else None
-            ceh_low   = _get_low(ceh_series,   ts) if ceh_open else None
-            peh_low   = _get_low(peh_series,   ts) if peh_open else None
+        # ── Phase 1: Fixed SL — find first breach on either leg (vectorized) ──
+        ce_hit_idx = _first_breach_idx(ce, ce_sl)
+        pe_hit_idx = _first_breach_idx(pe, pe_sl)
 
-            # EOD square-off
-            if is_eod:
-                if ce_open and ce_close:
-                    result.ce_exit = ce_close; result.ce_exit_reason = "EOD"
-                    result.ce_exit_time = time_str; ce_open = False
-                if pe_open and pe_close:
-                    result.pe_exit = pe_close; result.pe_exit_reason = "EOD"
-                    result.pe_exit_time = time_str; pe_open = False
-                if ceh_open and ceh_close:
-                    result.ce_hedge_exit = ceh_close
-                    result.ce_hedge_exit_reason = "EOD"; ceh_open = False
-                if peh_open and peh_close:
-                    result.pe_hedge_exit = peh_close
-                    result.pe_hedge_exit_reason = "EOD"; peh_open = False
-                break
+        # Determine which leg hits first (or neither)
+        ce_hit_first = (ce_hit_idx is not None and
+                        (pe_hit_idx is None or ce_hit_idx <= pe_hit_idx))
+        pe_hit_first = (pe_hit_idx is not None and
+                        (ce_hit_idx is None or pe_hit_idx < ce_hit_idx))
 
-            # Candle buffers
-            c = _get_candle(ce_series, ts)
-            if c: ce_buf.append(c)
-            c = _get_candle(pe_series, ts)
-            if c: pe_buf.append(c)
+        # Both miss SL → EOD exit
+        if ce_hit_idx is None and pe_hit_idx is None:
+            result = _eod_exit_all(result, ce, pe, ceh, peh, eod_ts)
+            return result
 
-            # CE sell SL check
-            if ce_open and ce_high is not None:
-                active_sl = ce_atr_sl if ce_in_trail else ce_sl
-                if active_sl and ce_high >= active_sl:
-                    result.ce_exit = active_sl
-                    result.ce_exit_reason = "ATR_TRAIL_SL" if ce_in_trail else "FIXED_SL"
-                    result.ce_exit_time = time_str; ce_open = False
-                    if not pe_in_trail:
-                        pe_in_trail = True
-                        sl = self._compute_atr_sl(pe_buf)
-                        pe_atr_sl = sl if sl else pe_sl
+        # ── Phase 2: First leg exits at fixed SL ──────────────────────────────
+        if ce_hit_first:
+            idx_ts = ce.index[ce_hit_idx]
+            result.ce_exit        = ce_sl
+            result.ce_exit_reason = "FIXED_SL"
+            result.ce_exit_time   = idx_ts.strftime("%H:%M:%S")
 
-            # PE sell SL check
-            if pe_open and pe_high is not None:
-                active_sl = pe_atr_sl if pe_in_trail else pe_sl
-                if active_sl and pe_high >= active_sl:
-                    result.pe_exit = active_sl
-                    result.pe_exit_reason = "ATR_TRAIL_SL" if pe_in_trail else "FIXED_SL"
-                    result.pe_exit_time = time_str; pe_open = False
-                    if not ce_in_trail:
-                        ce_in_trail = True
-                        sl = self._compute_atr_sl(ce_buf)
-                        ce_atr_sl = sl if sl else ce_sl
+            # CE hedge → step trailing from this point forward
+            ceh_after = ceh[ceh.index >= idx_ts] if not ceh.empty else pd.DataFrame()
+            result = _trail_hedge(result, ceh_after, result.ce_hedge_entry or 0.0,
+                                  self.p.hedge_trail_step, "ce")
 
-            # Update ATR trailing SL
-            if ce_open and ce_in_trail:
-                sl = self._compute_atr_sl(ce_buf)
-                if sl and sl < ce_atr_sl: ce_atr_sl = sl
+            # PE surviving leg → ATR trailing
+            pe_after = pe[pe.index >= idx_ts]
+            result = self._atr_trail_leg(result, pe_after, pe_sl, eod_ts, "pe")
 
-            if pe_open and pe_in_trail:
-                sl = self._compute_atr_sl(pe_buf)
-                if sl and sl < pe_atr_sl: pe_atr_sl = sl
+            # PE hedge → EOD if PE didn't hit SL, else already handled
+            if result.pe_exit_reason == "EOD" and not peh.empty:
+                peh_close = peh["close"].iloc[-1] if not peh.empty else None
+                if peh_close:
+                    result.pe_hedge_exit        = float(peh_close)
+                    result.pe_hedge_exit_reason = "EOD"
 
-            # CE hedge step trailing (after CE sell hits SL)
-            if ceh_open and ceh_close and not ce_open:
-                if ceh_close > ce_hedge_max: ce_hedge_max = ceh_close
-                sl = compute_hedge_step_sl(ce_hedge_max, result.ce_hedge_entry or 0.0,
-                                           self.p.hedge_trail_step)
-                if sl and ceh_low is not None and ceh_low <= sl:
-                    result.ce_hedge_exit = sl
-                    result.ce_hedge_exit_reason = "STEP_TRAIL_SL"; ceh_open = False
+        elif pe_hit_first:
+            idx_ts = pe.index[pe_hit_idx]
+            result.pe_exit        = pe_sl
+            result.pe_exit_reason = "FIXED_SL"
+            result.pe_exit_time   = idx_ts.strftime("%H:%M:%S")
 
-            # PE hedge step trailing (after PE sell hits SL)
-            if peh_open and peh_close and not pe_open:
-                if peh_close > pe_hedge_max: pe_hedge_max = peh_close
-                sl = compute_hedge_step_sl(pe_hedge_max, result.pe_hedge_entry or 0.0,
-                                           self.p.hedge_trail_step)
-                if sl and peh_low is not None and peh_low <= sl:
-                    result.pe_hedge_exit = sl
-                    result.pe_hedge_exit_reason = "STEP_TRAIL_SL"; peh_open = False
+            # PE hedge → step trailing
+            peh_after = peh[peh.index >= idx_ts] if not peh.empty else pd.DataFrame()
+            result = _trail_hedge(result, peh_after, result.pe_hedge_entry or 0.0,
+                                  self.p.hedge_trail_step, "pe")
 
-            if not ce_open and not pe_open and not ceh_open and not peh_open:
-                break
+            # CE surviving leg → ATR trailing
+            ce_after = ce[ce.index >= idx_ts]
+            result = self._atr_trail_leg(result, ce_after, ce_sl, eod_ts, "ce")
+
+            # CE hedge → EOD
+            if result.ce_exit_reason == "EOD" and not ceh.empty:
+                ceh_close = ceh["close"].iloc[-1] if not ceh.empty else None
+                if ceh_close:
+                    result.ce_hedge_exit        = float(ceh_close)
+                    result.ce_hedge_exit_reason = "EOD"
 
         return result
 
-    def _compute_atr_sl(self, buf: list) -> Optional[float]:
-        if len(buf) < self.p.atr_period + 2:
-            return None
-        df = pd.DataFrame(buf).set_index("datetime")
-        df = resample_to_timeframe(df, self.p.atr_timeframe)
-        if len(df) < self.p.atr_period + 2:
-            return None
-        return compute_atr_trail_sl(df, self.p.atr_period, self.p.atr_multiplier, is_short=True)
+    def _atr_trail_leg(self, result, series, initial_sl, eod_ts, leg: str) -> DayResult:
+        """
+        ATR trailing for the surviving sell leg after the other leg hit SL.
+        Recalculates ATR once per ATR-candle, then vectorized SL check within
+        that candle window. Much faster than checking every second.
+        """
+        import numpy as np
+
+        if series.empty:
+            # No data after SL hit → EOD exit at last known price
+            _set_eod(result, series, leg)
+            return result
+
+        # Resample to ATR timeframe for candle-level iteration
+        atr_candles = resample_to_timeframe(series, self.p.atr_timeframe)
+        current_sl  = initial_sl
+
+        for i in range(len(atr_candles)):
+            candle_end = atr_candles.index[i]
+
+            # Update ATR SL using all candles up to now
+            if i >= self.p.atr_period + 1:
+                new_sl = compute_atr_trail_sl(
+                    atr_candles.iloc[:i+1],
+                    self.p.atr_period,
+                    self.p.atr_multiplier,
+                    is_short=True
+                )
+                # Only tighten (lower SL = tighter for short)
+                if new_sl and new_sl < current_sl:
+                    current_sl = new_sl
+
+            # Check this ATR candle's 1-sec ticks for SL breach (vectorized)
+            if i < len(atr_candles) - 1:
+                candle_start = atr_candles.index[i - 1] if i > 0 else series.index[0]
+            else:
+                candle_start = atr_candles.index[i - 1] if i > 0 else series.index[0]
+
+            tick_window = series[
+                (series.index > candle_start) & (series.index <= candle_end)
+            ] if i > 0 else series[series.index <= candle_end]
+
+            if tick_window.empty:
+                continue
+
+            breach_idx = _first_breach_idx(tick_window, current_sl)
+            if breach_idx is not None:
+                breach_ts = tick_window.index[breach_idx]
+                _set_sl_exit(result, current_sl, breach_ts, "ATR_TRAIL_SL", leg)
+                return result
+
+            # Check EOD
+            if candle_end >= eod_ts:
+                _set_eod(result, series, leg)
+                return result
+
+        # Reached end without SL → EOD
+        _set_eod(result, series, leg)
+        return result
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Vectorized helpers ────────────────────────────────────────────────────────
 
-def _build_timeline(series, entry_time, eod_ts):
-    if series.empty: return []
-    date_str = series.index[0].strftime("%Y-%m-%d")
-    entry_ts = pd.Timestamp(f"{date_str} {entry_time}")
-    mask = (series.index >= entry_ts) & (series.index <= eod_ts)
-    return list(series.index[mask])
+def _first_breach_idx(series: pd.DataFrame, sl: float) -> Optional[int]:
+    """
+    Find index of FIRST second where high >= sl.
+    Pure numpy — single array operation regardless of series length.
+    Returns None if never breached.
+    """
+    if series.empty or sl is None or "high" not in series.columns:
+        return None
+    import numpy as np
+    highs = series["high"].values
+    mask  = highs >= sl
+    if not mask.any():
+        return None
+    return int(np.argmax(mask))   # argmax returns first True index
 
-def _get_close(series, ts):
-    if series.empty or ts not in series.index: return None
-    v = series.at[ts, "close"]
-    return float(v) if pd.notna(v) and v > 0 else None
 
-def _get_high(series, ts):
-    if series.empty or ts not in series.index: return None
-    v = series.at[ts, "high"]
-    return float(v) if pd.notna(v) and v > 0 else None
+def _trail_hedge(result, hedge_series: pd.DataFrame, entry_price: float,
+                 step: float, leg: str) -> DayResult:
+    """
+    Step-wise hedge trailing using vectorized max-tracking.
+    Scans each second, tracks running max, computes step SL.
+    """
+    import numpy as np
+    if hedge_series.empty:
+        return result
 
-def _get_low(series, ts):
-    if series.empty or ts not in series.index: return None
-    v = series.at[ts, "low"]
-    return float(v) if pd.notna(v) and v > 0 else None
+    closes = hedge_series["close"].values
+    lows   = hedge_series["low"].values if "low" in hedge_series.columns else closes
 
-def _get_candle(series, ts):
-    if series.empty or ts not in series.index: return None
-    row = series.loc[ts]
-    return {"datetime": ts, "open": float(row.get("open", row["close"])),
-            "high": float(row.get("high", row["close"])),
-            "low": float(row.get("low",  row["close"])),
-            "close": float(row["close"])}
+    running_max = entry_price
+    for i in range(len(closes)):
+        if closes[i] > running_max:
+            running_max = closes[i]
+        sl = compute_hedge_step_sl(running_max, entry_price, step)
+        if sl is not None and lows[i] <= sl:
+            ts = hedge_series.index[i]
+            if leg == "ce":
+                result.ce_hedge_exit        = sl
+                result.ce_hedge_exit_reason = "STEP_TRAIL_SL"
+            else:
+                result.pe_hedge_exit        = sl
+                result.pe_hedge_exit_reason = "STEP_TRAIL_SL"
+            return result
+
+    # No step SL hit → EOD
+    last_close = float(closes[-1]) if len(closes) else None
+    if leg == "ce":
+        result.ce_hedge_exit        = last_close
+        result.ce_hedge_exit_reason = "EOD"
+    else:
+        result.pe_hedge_exit        = last_close
+        result.pe_hedge_exit_reason = "EOD"
+    return result
+
+
+def _eod_exit_all(result, ce, pe, ceh, peh, eod_ts) -> DayResult:
+    """Square off all legs at EOD."""
+    for series, attr_exit, attr_reason, attr_time in [
+        (ce,  "ce_exit",       "ce_exit_reason",       "ce_exit_time"),
+        (pe,  "pe_exit",       "pe_exit_reason",       "pe_exit_time"),
+        (ceh, "ce_hedge_exit", "ce_hedge_exit_reason", None),
+        (peh, "pe_hedge_exit", "pe_hedge_exit_reason", None),
+    ]:
+        if series.empty:
+            continue
+        last = series[series.index <= eod_ts]
+        if last.empty:
+            last = series
+        price = float(last["close"].iloc[-1])
+        setattr(result, attr_exit,  price)
+        setattr(result, attr_reason, "EOD")
+        if attr_time:
+            setattr(result, attr_time, last.index[-1].strftime("%H:%M:%S"))
+    return result
+
+
+def _set_sl_exit(result, sl_price, ts, reason, leg):
+    time_str = ts.strftime("%H:%M:%S")
+    if leg == "ce":
+        result.ce_exit = sl_price; result.ce_exit_reason = reason
+        result.ce_exit_time = time_str
+    else:
+        result.pe_exit = sl_price; result.pe_exit_reason = reason
+        result.pe_exit_time = time_str
+
+
+def _set_eod(result, series, leg):
+    if series.empty: return
+    price    = float(series["close"].iloc[-1])
+    time_str = series.index[-1].strftime("%H:%M:%S")
+    if leg == "ce":
+        result.ce_exit = price; result.ce_exit_reason = "EOD"
+        result.ce_exit_time = time_str
+    else:
+        result.pe_exit = price; result.pe_exit_reason = "EOD"
+        result.pe_exit_time = time_str
+
 
 def _get_value_at_time(series, time_str, col="close"):
     if series.empty: return None
     mask = series.index.strftime("%H:%M") == time_str
-    m = series[mask]
+    m    = series[mask]
     if m.empty:
         before = series[series.index.strftime("%H:%M") <= time_str]
         return float(before[col].iloc[-1]) if not before.empty else None
