@@ -29,8 +29,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# ── Default data path (edit here or pass --data-path) ────────────────────────
-DEFAULT_DATA_PATH = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.2\breeze_data"
+# ══════════════════════════════════════════════════════════════════
+#  ▶  EDIT THESE TO RUN DIRECTLY IN VSCODE (press F5 or Run)
+# ══════════════════════════════════════════════════════════════════
+DEFAULT_DATA_PATH = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.9\breeze_data"
+DEFAULT_FROM_DATE = "2026-01-02"
+DEFAULT_TO_DATE   = "2026-04-21"
+DEFAULT_MODE      = "single"   # "single", "grid", or "stats"
+# ══════════════════════════════════════════════════════════════════
 
 
 def make_path_config(args) -> PathConfig:
@@ -177,8 +183,21 @@ if __name__ == "__main__":
     parser = build_parser()
     args   = parser.parse_args()
 
+    # ── If run directly in VSCode with no CLI args, use the defaults above ──
     if args.command is None:
-        parser.print_help()
-        sys.exit(0)
+        import types
+        args = types.SimpleNamespace(
+            command    = DEFAULT_MODE,
+            data_path  = DEFAULT_DATA_PATH,
+            from_date  = DEFAULT_FROM_DATE,
+            to_date    = DEFAULT_TO_DATE,
+            # single run defaults
+            atm_start  = None, atm_end   = None, eod      = None,
+            atr_tf     = None, atr_period= None, atr_mult = None,
+            hedge_pct  = None, trail_step= None,
+            # grid defaults
+            fast       = False,
+        )
+        print(f"[VSCode mode] Running: {DEFAULT_MODE}  {DEFAULT_FROM_DATE} → {DEFAULT_TO_DATE}")
 
     {"single": cmd_single, "grid": cmd_grid, "stats": cmd_stats}[args.command](args)

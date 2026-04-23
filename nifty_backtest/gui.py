@@ -1,885 +1,392 @@
 """
-gui.py — Balfund NIFTY Straddle Backtest — Desktop GUI
-Drop this file into the same folder as strategy.py, config.py, etc.
-Run:  python gui.py
+gui.py — Balfund NIFTY Straddle Backtest GUI
+Drop into nifty_backtest/ folder alongside strategy.py, config.py etc.
+Run: python gui.py
 """
 
 import sys
 import os
 import threading
 import queue
-import io
 import json
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
 import customtkinter as ctk
 
-
-# ─── stdout redirector → routes print() into the log queue ───────────────────
-class _QueueStream:
-    def __init__(self, q):
-        self._q = q
-    def write(self, text):
-        if text:
-            self._q.put(("log", text))
-    def flush(self):
-        pass
-
-# ─── Balfund Brand Colors ────────────────────────────────────────────────────
-NAVY      = "#0D1B2A"
-NAVY_MID  = "#162032"
-NAVY_CARD = "#1A2740"
-GOLD      = "#C9A84C"
-GOLD_DARK = "#A0802A"
-TEXT      = "#E8EAF0"
-TEXT_DIM  = "#8A9BB5"
-GREEN     = "#2ECC71"
-RED       = "#E74C3C"
-ORANGE    = "#F39C12"
-ACCENT    = "#3A7BD5"
-BORDER    = "#2A3F5F"
-
+# ── Appearance ────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ─── Font helpers ─────────────────────────────────────────────────────────────
-def F(size, weight="normal"): return ctk.CTkFont(family="Consolas", size=size, weight=weight)
-def FU(size, weight="normal"): return ctk.CTkFont(size=size, weight=weight)
+BG          = "#0d1117"
+CARD        = "#161b22"
+BORDER      = "#30363d"
+ACCENT      = "#238636"
+ACCENT_HOVER= "#2ea043"
+RED         = "#da3633"
+BLUE        = "#58a6ff"
+GOLD        = "#e3b341"
+TEXT        = "#c9d1d9"
+MUTED       = "#8b949e"
 
-# ─── Reusable Widget Factory ──────────────────────────────────────────────────
-
-def section_label(parent, text):
-    return ctk.CTkLabel(parent, text=text, font=FU(11, "bold"),
-                        text_color=GOLD, anchor="w")
-
-def param_label(parent, text):
-    return ctk.CTkLabel(parent, text=text, font=FU(12),
-                        text_color=TEXT_DIM, anchor="w")
-
-def make_entry(parent, width=120, placeholder="", initial=""):
-    e = ctk.CTkEntry(parent, width=width, font=F(12),
-                     fg_color=NAVY, border_color=BORDER,
-                     text_color=TEXT, placeholder_text=placeholder,
-                     corner_radius=6)
-    if initial:
-        e.insert(0, initial)
-    return e
-
-def make_optionmenu(parent, values, initial, width=120):
-    var = ctk.StringVar(value=initial)
-    om = ctk.CTkOptionMenu(parent, values=values, variable=var,
-                           width=width, font=FU(12),
-                           fg_color=NAVY_CARD, button_color=ACCENT,
-                           button_hover_color=GOLD_DARK,
-                           text_color=TEXT, corner_radius=6)
-    return om, var
-
-def card(parent, **kwargs):
-    return ctk.CTkFrame(parent, fg_color=NAVY_CARD, corner_radius=10,
-                        border_width=1, border_color=BORDER, **kwargs)
-
-def row_frame(parent):
-    return ctk.CTkFrame(parent, fg_color="transparent")
-
-def divider(parent):
-    return ctk.CTkFrame(parent, height=1, fg_color=BORDER)
+FONT_H1     = ("Segoe UI", 15, "bold")
+FONT_H2     = ("Segoe UI", 12, "bold")
+FONT_BODY   = ("Segoe UI", 11)
+FONT_SMALL  = ("Segoe UI", 10)
+FONT_MONO   = ("Consolas", 10)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PARAMETER PANEL — Single Run
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class SingleRunPanel(ctk.CTkScrollableFrame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self._build()
-
-    def _build(self):
-        p = self
-
-        # ── ATM Selection ─────────────────────────────────────────────────
-        section_label(p, "📡  ATM SELECTION").pack(anchor="w", pady=(10, 4), padx=4)
-        c = card(p); c.pack(fill="x", pady=(0, 10), padx=2)
-        g = ctk.CTkFrame(c, fg_color="transparent"); g.pack(fill="x", padx=14, pady=12)
-
-        self.atm_start = self._row(g, "ATM Scan Start", "HH:MM", "09:16", 0)
-        self.atm_end   = self._row(g, "ATM Scan End",   "HH:MM", "09:21", 1)
-        self.max_diff  = self._row(g, "Max Premium Diff (₹)", "e.g. 20", "20.0", 2)
-
-        # ── Hedge ────────────────────────────────────────────────────────
-        section_label(p, "🛡️  HEDGE").pack(anchor="w", pady=(4, 4), padx=4)
-        c2 = card(p); c2.pack(fill="x", pady=(0, 10), padx=2)
-        g2 = ctk.CTkFrame(c2, fg_color="transparent"); g2.pack(fill="x", padx=14, pady=12)
-        self.hedge_pct    = self._row(g2, "Hedge % of Premium", "e.g. 0.05", "0.05", 0)
-        self.trail_step   = self._row(g2, "Hedge Trail Step (₹)", "e.g. 3.0", "3.0", 1)
-
-        # ── VIX ──────────────────────────────────────────────────────────
-        section_label(p, "📊  VIX REGIMES").pack(anchor="w", pady=(4, 4), padx=4)
-        c3 = card(p); c3.pack(fill="x", pady=(0, 10), padx=2)
-        g3 = ctk.CTkFrame(c3, fg_color="transparent"); g3.pack(fill="x", padx=14, pady=12)
-        self.vix_low      = self._row(g3, "VIX Low Threshold",      "e.g. 12", "12.0", 0)
-        self.vix_mid_low  = self._row(g3, "VIX Mid-Low Threshold",  "e.g. 16", "16.0", 1)
-        self.vix_mid_high = self._row(g3, "VIX Mid-High Threshold", "e.g. 20", "20.0", 2)
-        self.vix_intra    = self._row(g3, "VIX Intraday Trigger %", "e.g. 3.0", "3.0",  3)
-
-        # ── Stop Loss ────────────────────────────────────────────────────
-        section_label(p, "🛑  STOP LOSS").pack(anchor="w", pady=(4, 4), padx=4)
-        c4 = card(p); c4.pack(fill="x", pady=(0, 10), padx=2)
-        g4 = ctk.CTkFrame(c4, fg_color="transparent"); g4.pack(fill="x", padx=14, pady=12)
-        self.sl_lt12      = self._row(g4, "SL % — VIX < 12",           "e.g. 0.40", "0.40", 0)
-        self.sl_1216_calm = self._row(g4, "SL % — VIX 12-16 Calm",     "e.g. 0.40", "0.40", 1)
-        self.sl_1216_vol  = self._row(g4, "SL % — VIX 12-16 Volatile", "e.g. 0.25", "0.25", 2)
-        self.sl_1620      = self._row(g4, "SL % — VIX 16-20",          "e.g. 0.25", "0.25", 3)
-        self.sl_gt20      = self._row(g4, "SL % — VIX > 20",           "e.g. 0.15", "0.15", 4)
-        self.sl_buffer    = self._row(g4, "SL Flat Buffer (₹)",         "e.g. 5.0",  "5.0",  5)
-
-        # ── ATR Trailing ─────────────────────────────────────────────────
-        section_label(p, "📉  ATR TRAILING (surviving leg)").pack(anchor="w", pady=(4, 4), padx=4)
-        c5 = card(p); c5.pack(fill="x", pady=(0, 10), padx=2)
-        g5 = ctk.CTkFrame(c5, fg_color="transparent"); g5.pack(fill="x", padx=14, pady=12)
-
-        # ATR timeframe is a dropdown
-        param_label(g5, "ATR Timeframe").grid(row=0, column=0, sticky="w", padx=(0,16), pady=4)
-        self.atr_tf_menu, self.atr_tf_var = make_optionmenu(
-            g5, ["1min", "5min", "15min"], "5min", width=130)
-        self.atr_tf_menu.grid(row=0, column=1, sticky="w", pady=4)
-
-        self.atr_period = self._row(g5, "ATR Period",     "e.g. 14",  "14",  1)
-        self.atr_mult   = self._row(g5, "ATR Multiplier", "e.g. 1.5", "1.5", 2)
-
-        # ── Exit & Lot ───────────────────────────────────────────────────
-        section_label(p, "⏰  EXIT & POSITION").pack(anchor="w", pady=(4, 4), padx=4)
-        c6 = card(p); c6.pack(fill="x", pady=(0, 10), padx=2)
-        g6 = ctk.CTkFrame(c6, fg_color="transparent"); g6.pack(fill="x", padx=14, pady=12)
-        self.eod_time = self._row(g6, "EOD Exit Time", "HH:MM",   "15:20", 0)
-        self.lot_size = self._row(g6, "Lot Size",      "e.g. 75", "75",    1)
-
-    def _row(self, parent, label, placeholder, initial, row):
-        param_label(parent, label).grid(row=row, column=0, sticky="w",
-                                        padx=(0, 16), pady=4)
-        e = make_entry(parent, width=130, placeholder=placeholder, initial=initial)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        return e
-
-    def get_params(self) -> dict:
-        return {
-            "atm_scan_start":          self.atm_start.get().strip(),
-            "atm_scan_end":            self.atm_end.get().strip(),
-            "max_premium_diff":        float(self.max_diff.get()),
-            "hedge_pct":               float(self.hedge_pct.get()),
-            "hedge_trail_step":        float(self.trail_step.get()),
-            "vix_low":                 float(self.vix_low.get()),
-            "vix_mid_low":             float(self.vix_mid_low.get()),
-            "vix_mid_high":            float(self.vix_mid_high.get()),
-            "vix_intraday_threshold":  float(self.vix_intra.get()),
-            "sl_pct_vix_lt12":         float(self.sl_lt12.get()),
-            "sl_pct_vix_12_16_calm":   float(self.sl_1216_calm.get()),
-            "sl_pct_vix_12_16_volatile": float(self.sl_1216_vol.get()),
-            "sl_pct_vix_16_20":        float(self.sl_1620.get()),
-            "sl_pct_vix_gt20":         float(self.sl_gt20.get()),
-            "sl_buffer":               float(self.sl_buffer.get()),
-            "atr_timeframe":           self.atr_tf_var.get(),
-            "atr_period":              int(self.atr_period.get()),
-            "atr_multiplier":          float(self.atr_mult.get()),
-            "eod_exit_time":           self.eod_time.get().strip(),
-            "lot_size":                int(self.lot_size.get()),
-        }
+# ── Stdout redirect ───────────────────────────────────────────────────────────
+class _QueueStream:
+    """Redirect print() output to a queue so GUI can display it."""
+    def __init__(self, q: queue.Queue):
+        self._q = q
+    def write(self, msg: str):
+        if msg.strip():
+            self._q.put(msg.rstrip())
+    def flush(self):
+        pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PARAMETER PANEL — Grid Search
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class GridSearchPanel(ctk.CTkScrollableFrame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self._build()
-
-    def _build(self):
-        p = self
-        hint = ctk.CTkLabel(p, text="Enter comma-separated values for each parameter",
-                            font=FU(11), text_color=TEXT_DIM)
-        hint.pack(anchor="w", pady=(6, 10), padx=4)
-
-        # ── ATM ──────────────────────────────────────────────────────────
-        section_label(p, "📡  ATM SELECTION").pack(anchor="w", pady=(0, 4), padx=4)
-        c = card(p); c.pack(fill="x", pady=(0, 10), padx=2)
-        g = ctk.CTkFrame(c, fg_color="transparent"); g.pack(fill="x", padx=14, pady=12)
-        self.g_atm_starts = self._row(g, "ATM Scan Starts",    "09:16, 09:17",       "09:16, 09:17", 0)
-        self.g_atm_ends   = self._row(g, "ATM Scan Ends",      "09:20, 09:21",       "09:20, 09:21", 1)
-        self.g_max_diffs  = self._row(g, "Max Premium Diffs",  "10, 20, 30",         "10.0, 20.0, 30.0", 2)
-
-        # ── Hedge ────────────────────────────────────────────────────────
-        section_label(p, "🛡️  HEDGE").pack(anchor="w", pady=(4, 4), padx=4)
-        c2 = card(p); c2.pack(fill="x", pady=(0, 10), padx=2)
-        g2 = ctk.CTkFrame(c2, fg_color="transparent"); g2.pack(fill="x", padx=14, pady=12)
-        self.g_hedge_pcts  = self._row(g2, "Hedge Pct Values",    "0.03, 0.05, 0.07", "0.03, 0.05, 0.07", 0)
-        self.g_trail_steps = self._row(g2, "Trail Step Values",   "2.0, 3.0, 4.0",    "2.0, 3.0, 4.0", 1)
-
-        # ── VIX ──────────────────────────────────────────────────────────
-        section_label(p, "📊  VIX INTRADAY THRESHOLD").pack(anchor="w", pady=(4, 4), padx=4)
-        c3 = card(p); c3.pack(fill="x", pady=(0, 10), padx=2)
-        g3 = ctk.CTkFrame(c3, fg_color="transparent"); g3.pack(fill="x", padx=14, pady=12)
-        self.g_vix_thresholds = self._row(g3, "VIX Intraday % Triggers", "2.0, 3.0, 4.0", "2.0, 3.0, 4.0", 0)
-
-        # ── ATR ──────────────────────────────────────────────────────────
-        section_label(p, "📉  ATR TRAILING").pack(anchor="w", pady=(4, 4), padx=4)
-        c4 = card(p); c4.pack(fill="x", pady=(0, 10), padx=2)
-        g4 = ctk.CTkFrame(c4, fg_color="transparent"); g4.pack(fill="x", padx=14, pady=12)
-        self.g_atr_tfs     = self._row(g4, "ATR Timeframes", "1min, 5min, 15min", "1min, 5min, 15min", 0)
-        self.g_atr_periods = self._row(g4, "ATR Periods",    "7, 14, 21",         "7, 14, 21", 1)
-        self.g_atr_mults   = self._row(g4, "ATR Multipliers","1.0, 1.5, 2.0",     "1.0, 1.5, 2.0", 2)
-
-        # ── EOD ──────────────────────────────────────────────────────────
-        section_label(p, "⏰  EOD EXIT TIMES").pack(anchor="w", pady=(4, 4), padx=4)
-        c5 = card(p); c5.pack(fill="x", pady=(0, 10), padx=2)
-        g5 = ctk.CTkFrame(c5, fg_color="transparent"); g5.pack(fill="x", padx=14, pady=12)
-        self.g_eod_times = self._row(g5, "EOD Exit Times", "15:15, 15:20, 15:25", "15:15, 15:20, 15:25", 0)
-
-        # ── Fast mode toggle ──────────────────────────────────────────────
-        section_label(p, "⚡  FAST MODE").pack(anchor="w", pady=(4, 4), padx=4)
-        c6 = card(p); c6.pack(fill="x", pady=(0, 10), padx=2)
-        gf = ctk.CTkFrame(c6, fg_color="transparent"); gf.pack(fill="x", padx=14, pady=12)
-        self.fast_mode_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(gf, text="Fast Mode  (reduces ATR timeframes/periods/multipliers)",
-                        variable=self.fast_mode_var, font=FU(12),
-                        text_color=TEXT, checkmark_color=NAVY,
-                        fg_color=GOLD, hover_color=GOLD_DARK,
-                        border_color=BORDER).grid(row=0, column=0, sticky="w")
-
-        # ── Combo count display ───────────────────────────────────────────
-        self.combo_lbl = ctk.CTkLabel(p, text="", font=FU(12, "bold"), text_color=ORANGE)
-        self.combo_lbl.pack(anchor="w", padx=4, pady=(0, 8))
-        self._bind_combo_update()
-
-    def _row(self, parent, label, placeholder, initial, row):
-        param_label(parent, label).grid(row=row, column=0, sticky="w",
-                                        padx=(0, 16), pady=4, minsize=200)
-        e = make_entry(parent, width=260, placeholder=placeholder, initial=initial)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        return e
-
-    def _bind_combo_update(self):
-        widgets = [self.g_atm_starts, self.g_atm_ends, self.g_max_diffs,
-                   self.g_hedge_pcts, self.g_trail_steps, self.g_vix_thresholds,
-                   self.g_atr_tfs, self.g_atr_periods, self.g_atr_mults, self.g_eod_times]
-        for w in widgets:
-            w.bind("<KeyRelease>", lambda e: self._update_combo_count())
-
-    def _parse_list(self, widget):
-        raw = widget.get().strip()
-        if not raw: return []
-        return [x.strip() for x in raw.split(",") if x.strip()]
-
-    def _update_combo_count(self):
-        try:
-            total = 1
-            for w in [self.g_atm_starts, self.g_atm_ends, self.g_max_diffs,
-                      self.g_hedge_pcts, self.g_trail_steps, self.g_vix_thresholds,
-                      self.g_atr_tfs, self.g_atr_periods, self.g_atr_mults, self.g_eod_times]:
-                n = len(self._parse_list(w))
-                if n: total *= n
-            self.combo_lbl.configure(text=f"⚡  Total combinations: {total:,}")
-        except:
-            pass
-
-    def get_grid_config(self) -> dict:
-        def floats(w): return [float(x) for x in self._parse_list(w)]
-        def ints(w):   return [int(x)   for x in self._parse_list(w)]
-        def strs(w):   return self._parse_list(w)
-        return {
-            "atm_scan_starts":         strs(self.g_atm_starts),
-            "atm_scan_ends":           strs(self.g_atm_ends),
-            "max_premium_diffs":       floats(self.g_max_diffs),
-            "hedge_pcts":              floats(self.g_hedge_pcts),
-            "hedge_trail_steps":       floats(self.g_trail_steps),
-            "vix_intraday_thresholds": floats(self.g_vix_thresholds),
-            "atr_timeframes":          strs(self.g_atr_tfs),
-            "atr_periods":             ints(self.g_atr_periods),
-            "atr_multipliers":         floats(self.g_atr_mults),
-            "eod_exit_times":          strs(self.g_eod_times),
-            "fast_mode":               self.fast_mode_var.get(),
-        }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  RESULTS TABLE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ResultsTable(ctk.CTkFrame):
-    """Simple scrollable table to show metrics after a run."""
-    COLS = [
-        ("Metric", 220),
-        ("Value",  200),
-    ]
-
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=NAVY_CARD, corner_radius=10,
-                         border_width=1, border_color=BORDER, **kwargs)
-        self._rows = []
-        self._build()
-
-    def _build(self):
-        hdr = ctk.CTkFrame(self, fg_color=BORDER, corner_radius=0)
-        hdr.pack(fill="x", padx=1, pady=(1, 0))
-        for col, w in self.COLS:
-            ctk.CTkLabel(hdr, text=col, font=FU(11, "bold"),
-                         text_color=GOLD, width=w, anchor="w").pack(
-                side="left", padx=8, pady=6)
-
-        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent",
-                                                    corner_radius=0)
-        self.scroll_frame.pack(fill="both", expand=True, padx=0, pady=0)
-
-    def clear(self):
-        for w in self.scroll_frame.winfo_children():
-            w.destroy()
-
-    def populate(self, metrics: dict):
-        self.clear()
-        display_order = [
-            ("total_pnl",          "Total P&L (₹)"),
-            ("traded_days",        "Traded Days"),
-            ("skipped_days",       "Skipped Days"),
-            ("win_rate_pct",       "Win Rate (%)"),
-            ("avg_daily_pnl",      "Avg Daily P&L (₹)"),
-            ("std_daily_pnl",      "Std Dev Daily P&L"),
-            ("avg_win",            "Avg Win (₹)"),
-            ("avg_loss",           "Avg Loss (₹)"),
-            ("max_win",            "Max Win (₹)"),
-            ("max_loss",           "Max Loss (₹)"),
-            ("profit_factor",      "Profit Factor"),
-            ("recovery_ratio",     "Recovery Ratio"),
-            ("sharpe",             "Sharpe Ratio (Annual)"),
-            ("max_drawdown",       "Max Drawdown (₹)"),
-            ("max_drawdown_pct",   "Max Drawdown (%)"),
-            ("max_consec_wins",    "Max Consecutive Wins"),
-            ("max_consec_losses",  "Max Consecutive Losses"),
-            ("both_legs_sl",       "Both Legs SL Days"),
-            ("one_leg_sl",         "One Leg SL Days"),
-            ("eod_exits",          "EOD Exits"),
-        ]
-        for i, (key, label) in enumerate(display_order):
-            val = metrics.get(key, "—")
-            bg = NAVY if i % 2 == 0 else NAVY_CARD
-            row = ctk.CTkFrame(self.scroll_frame, fg_color=bg, corner_radius=0)
-            row.pack(fill="x")
-
-            # color-code pnl
-            val_color = TEXT
-            if key == "total_pnl" and isinstance(val, (int, float)):
-                val_color = GREEN if val >= 0 else RED
-            if key == "win_rate_pct" and isinstance(val, (int, float)):
-                val_color = GREEN if val >= 50 else ORANGE
-
-            ctk.CTkLabel(row, text=label, font=FU(12), text_color=TEXT_DIM,
-                         width=220, anchor="w").pack(side="left", padx=8, pady=5)
-            fmt = f"₹{val:>,.2f}" if "pnl" in key or key in ("avg_win","avg_loss","max_win","max_loss","max_drawdown") else (
-                  f"{val:.3f}"    if isinstance(val, float) else str(val))
-            ctk.CTkLabel(row, text=fmt, font=F(12, "bold"), text_color=val_color,
-                         width=200, anchor="w").pack(side="left", padx=8, pady=5)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  LOG PANEL
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class LogPanel(ctk.CTkFrame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=NAVY, corner_radius=8,
-                         border_width=1, border_color=BORDER, **kwargs)
-        hdr = ctk.CTkFrame(self, fg_color=NAVY_CARD, corner_radius=0)
-        hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text="  📋 Console Output", font=FU(11, "bold"),
-                     text_color=GOLD).pack(side="left", pady=5)
-        ctk.CTkButton(hdr, text="Clear", width=60, height=26,
-                      font=FU(10), fg_color=BORDER, hover_color=NAVY_MID,
-                      text_color=TEXT_DIM, corner_radius=4,
-                      command=self.clear).pack(side="right", padx=8, pady=4)
-
-        self.textbox = ctk.CTkTextbox(self, font=F(11), fg_color=NAVY,
-                                       text_color="#A8C8A0",
-                                       corner_radius=0, wrap="word")
-        self.textbox.pack(fill="both", expand=True, padx=2, pady=2)
-        self.textbox.configure(state="disabled")
-
-    def append(self, text: str, color: str = None):
-        self.textbox.configure(state="normal")
-        self.textbox.insert("end", text)
-        self.textbox.see("end")
-        self.textbox.configure(state="disabled")
-
-    def clear(self):
-        self.textbox.configure(state="normal")
-        self.textbox.delete("1.0", "end")
-        self.textbox.configure(state="disabled")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN APP WINDOW
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Main App ──────────────────────────────────────────────────────────────────
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Balfund — NIFTY Straddle Backtest")
         self.geometry("1280x820")
-        self.minsize(1050, 700)
-        self.configure(fg_color=NAVY)
+        self.minsize(1100, 720)
+        self.configure(fg_color=BG)
 
-        self._running         = False
-        self._stop_requested  = False
-        self._q               = queue.Queue()
+        self._q         = queue.Queue()
+        self._running   = False
+        self._thread    = None
+        self._last_rpt  = None
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
 
         self._build_ui()
-        self.after(100, self._poll_queue)
+        self._poll_queue()
 
-    # ─── Layout ──────────────────────────────────────────────────────────────
+    # ─── UI ──────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Header ──────────────────────────────────────────────────────
-        hdr = ctk.CTkFrame(self, fg_color=NAVY_CARD, height=58,
-                           corner_radius=0, border_width=0)
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=52)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="  📈  Balfund NIFTY Straddle Backtest",
+                     font=FONT_H1, text_color=BLUE).pack(side="left", padx=16)
+        self._status = ctk.CTkLabel(hdr, text="● Idle",
+                                     font=FONT_BODY, text_color=MUTED)
+        self._status.pack(side="right", padx=16)
 
-        ctk.CTkLabel(hdr, text="⬡  BALFUND", font=FU(20, "bold"),
-                     text_color=GOLD).pack(side="left", padx=20)
-        ctk.CTkLabel(hdr, text="NIFTY Straddle Backtest  v2.0",
-                     font=FU(13), text_color=TEXT_DIM).pack(side="left", padx=2)
+        # Body
+        body = ctk.CTkFrame(self, fg_color=BG)
+        body.pack(fill="both", expand=True, padx=10, pady=8)
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
 
-        self.status_lbl = ctk.CTkLabel(hdr, text="● Idle", font=FU(12, "bold"),
-                                        text_color=TEXT_DIM)
-        self.status_lbl.pack(side="right", padx=20)
+        self._build_left(body)
+        self._build_right(body)
 
-        # ── Body (sidebar + content) ──────────────────────────────────────
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True)
+        # Log
+        log_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=8)
+        log_card.pack(fill="x", padx=10, pady=(0, 6))
+        ctk.CTkLabel(log_card, text=" Console Output",
+                     font=FONT_SMALL, text_color=MUTED).pack(anchor="w", padx=10, pady=(6, 0))
+        self._log = ctk.CTkTextbox(log_card, height=150, font=FONT_MONO,
+                                    fg_color="#010409", text_color="#3fb950",
+                                    corner_radius=4, border_width=1,
+                                    border_color=BORDER)
+        self._log.pack(fill="x", padx=8, pady=(2, 8))
 
-        # Sidebar
-        self._build_sidebar(body)
+        # Bottom bar
+        bar = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=52)
+        bar.pack(fill="x", side="bottom")
+        bar.pack_propagate(False)
 
-        # Right content area (top: params, bottom: log)
-        right = ctk.CTkFrame(body, fg_color="transparent")
-        right.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=8)
+        self._run_btn = ctk.CTkButton(
+            bar, text="▶  RUN BACKTEST", font=("Segoe UI", 12, "bold"),
+            width=180, height=36, corner_radius=6,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=self._on_run
+        )
+        self._run_btn.pack(side="left", padx=(12, 6), pady=8)
 
-        # Top strip: data path + date range + run button
-        self._build_top_strip(right)
+        self._stop_btn = ctk.CTkButton(
+            bar, text="■  Stop", font=FONT_BODY, width=80, height=36,
+            corner_radius=6, fg_color="#21262d", hover_color=RED,
+            command=self._on_stop
+        )
+        self._stop_btn.pack(side="left", padx=4, pady=8)
 
-        # Tab content area
-        self.content_area = ctk.CTkFrame(right, fg_color="transparent")
-        self.content_area.pack(fill="both", expand=True)
+        self._open_btn = ctk.CTkButton(
+            bar, text="📂  Open Report", font=FONT_BODY, width=130, height=36,
+            corner_radius=6, fg_color="#21262d", hover_color="#1f6feb",
+            command=self._open_report, state="disabled"
+        )
+        self._open_btn.pack(side="left", padx=4, pady=8)
 
-        # Build pages
-        self.pages = {}
-        self._build_single_page()
-        self._build_grid_page()
-        self._build_results_page()
+        self._prog = ctk.CTkProgressBar(bar, width=260, height=6,
+                                         progress_color=ACCENT,
+                                         fg_color="#21262d")
+        self._prog.pack(side="right", padx=16, pady=8)
+        self._prog.set(0)
 
-        # Log panel (always visible at bottom)
-        self.log = LogPanel(right)
-        self.log.pack(fill="x", pady=(4, 0), ipady=2)
-        self.log.configure(height=200)
+    def _build_left(self, parent):
+        frame = ctk.CTkScrollableFrame(parent, fg_color=CARD, corner_radius=8,
+                                        label_text="  Strategy Parameters",
+                                        label_font=FONT_H2,
+                                        label_text_color=BLUE)
+        frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self._vars = {}
 
-        # Show default page
-        self._show_page("single")
+        def section(title):
+            ctk.CTkLabel(frame, text=title, font=("Segoe UI", 11, "bold"),
+                         text_color=GOLD).pack(anchor="w", padx=10, pady=(12, 2))
 
-    def _build_sidebar(self, parent):
-        sb = ctk.CTkFrame(parent, fg_color=NAVY_CARD, width=170,
-                          corner_radius=0, border_width=0)
-        sb.pack(side="left", fill="y")
-        sb.pack_propagate(False)
+        def row(label, key, default, widget="entry", values=None):
+            r = ctk.CTkFrame(frame, fg_color="transparent")
+            r.pack(fill="x", padx=10, pady=2)
+            ctk.CTkLabel(r, text=label, font=FONT_SMALL, text_color=TEXT,
+                         width=200, anchor="w").pack(side="left")
+            if widget == "entry":
+                e = ctk.CTkEntry(r, font=FONT_SMALL, height=28, width=160,
+                                  fg_color="#0d1117", border_color=BORDER,
+                                  text_color=TEXT)
+                e.insert(0, str(default))
+                e.pack(side="left")
+                self._vars[key] = e
+            elif widget == "option":
+                v = ctk.StringVar(value=default)
+                o = ctk.CTkOptionMenu(r, values=values, variable=v,
+                                       font=FONT_SMALL, height=28, width=160,
+                                       fg_color="#0d1117", button_color="#21262d",
+                                       dropdown_fg_color="#161b22",
+                                       text_color=TEXT)
+                o.pack(side="left")
+                self._vars[key] = v
+            elif widget == "switch":
+                v = ctk.BooleanVar(value=default)
+                s = ctk.CTkSwitch(r, variable=v, text="", onvalue=True, offvalue=False,
+                                   progress_color=ACCENT)
+                s.pack(side="left")
+                self._vars[key] = v
 
-        ctk.CTkLabel(sb, text="MODE", font=FU(10, "bold"),
-                     text_color=TEXT_DIM).pack(pady=(20, 8), padx=12, anchor="w")
+        # ATM Selection
+        section("🎯 ATM Selection")
+        row("Scan Start (HH:MM)",     "atm_scan_start",    "09:16")
+        row("Scan End (HH:MM)",        "atm_scan_end",      "09:21")
+        row("Max CE-PE Diff (₹)",      "max_premium_diff",  "20")
 
-        self._nav_btns = {}
-        for key, icon, label in [
-            ("single",  "▶", "Single Run"),
-            ("grid",    "⊞", "Grid Search"),
-            ("results", "📊", "Results"),
-        ]:
-            btn = ctk.CTkButton(sb, text=f" {icon}  {label}", anchor="w",
-                                font=FU(13), height=42, corner_radius=8,
-                                fg_color="transparent", hover_color=BORDER,
-                                text_color=TEXT_DIM, border_width=0,
-                                command=lambda k=key: self._show_page(k))
-            btn.pack(fill="x", padx=8, pady=2)
-            self._nav_btns[key] = btn
+        # Hedge
+        section("🛡️ Hedge")
+        row("Hedge % of Premium",      "hedge_pct",         "0.05")
+        row("Step Trail Size (₹)",     "hedge_trail_step",  "3.0")
 
-        divider(sb).pack(fill="x", padx=12, pady=14)
+        # VIX / SL
+        section("📊 VIX & Stop Loss")
+        row("VIX Intraday Threshold %","vix_intraday_threshold", "3.0")
+        row("SL Buffer (₹)",           "sl_buffer",         "5.0")
 
-        # Quick stats in sidebar
-        self.sb_pnl  = self._sb_stat(sb, "Last P&L", "—")
-        self.sb_wr   = self._sb_stat(sb, "Win Rate",  "—")
-        self.sb_sh   = self._sb_stat(sb, "Sharpe",    "—")
-        self.sb_dd   = self._sb_stat(sb, "Max DD",    "—")
+        # ATR Trailing
+        section("📈 ATR Trailing")
+        row("ATR Timeframe",           "atr_timeframe",     "5min",
+            widget="option", values=["1min", "5min", "15min"])
+        row("ATR Period",              "atr_period",        "14")
+        row("ATR Multiplier",          "atr_multiplier",    "1.5")
 
-    def _sb_stat(self, parent, label, initial):
-        f = ctk.CTkFrame(parent, fg_color="transparent")
-        f.pack(fill="x", padx=14, pady=3)
-        ctk.CTkLabel(f, text=label, font=FU(10), text_color=TEXT_DIM,
-                     anchor="w").pack(fill="x")
-        lbl = ctk.CTkLabel(f, text=initial, font=FU(13, "bold"),
-                           text_color=GOLD, anchor="w")
-        lbl.pack(fill="x")
-        return lbl
+        # Exit
+        section("🚪 Exit")
+        row("EOD Exit Time (HH:MM)",   "eod_exit_time",     "15:20")
+        row("Lot Size",                "lot_size",          "75")
 
-    def _build_top_strip(self, parent):
-        strip = ctk.CTkFrame(parent, fg_color=NAVY_CARD, corner_radius=10,
-                             border_width=1, border_color=BORDER)
-        strip.pack(fill="x", pady=(0, 6))
+        # Grid Search
+        section("🔢 Grid Search Ranges (comma-separated)")
+        row("ATR Timeframes",          "grid_atr_tf",       "1min,5min,15min")
+        row("ATR Periods",             "grid_atr_per",      "7,14,21")
+        row("ATR Multipliers",         "grid_atr_mult",     "1.0,1.5,2.0")
+        row("Hedge %s",                "grid_hedge_pct",    "0.03,0.05,0.07")
+        row("EOD Times",               "grid_eod",          "15:15,15:20,15:25")
+        row("Max Prem Diffs",          "grid_prem_diff",    "10,20,30")
 
-        # Row 1: data path
-        r1 = ctk.CTkFrame(strip, fg_color="transparent")
-        r1.pack(fill="x", padx=12, pady=(10, 4))
-        param_label(r1, "Data Path:").pack(side="left", padx=(0, 8))
-        self.data_path_var = ctk.StringVar(
-            value=r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.2\breeze_data")
-        self.data_path_entry = ctk.CTkEntry(r1, textvariable=self.data_path_var,
-                                            width=480, font=F(11),
-                                            fg_color=NAVY, border_color=BORDER,
-                                            text_color=TEXT, corner_radius=6)
-        self.data_path_entry.pack(side="left")
-        ctk.CTkButton(r1, text="Browse…", width=80, height=30, font=FU(11),
-                      fg_color=BORDER, hover_color=NAVY_MID, text_color=TEXT,
-                      corner_radius=6, command=self._browse_path).pack(side="left", padx=8)
+    def _build_right(self, parent):
+        frame = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8)
+        frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
 
-        # Row 2: dates + run
-        r2 = ctk.CTkFrame(strip, fg_color="transparent")
-        r2.pack(fill="x", padx=12, pady=(0, 10))
+        def label(text, color=MUTED):
+            ctk.CTkLabel(frame, text=text, font=FONT_SMALL,
+                         text_color=color).pack(anchor="w", padx=12, pady=(10, 1))
 
-        param_label(r2, "From:").pack(side="left", padx=(0, 6))
-        self.from_date = make_entry(r2, width=110, placeholder="YYYY-MM-DD",
-                                    initial="2024-01-01")
-        self.from_date.pack(side="left", padx=(0, 14))
+        # Data path
+        label("DATA PATH", GOLD)
+        path_row = ctk.CTkFrame(frame, fg_color="transparent")
+        path_row.pack(fill="x", padx=10, pady=(0, 4))
+        self._data_path = ctk.CTkEntry(path_row, font=FONT_SMALL, height=30,
+                                        fg_color="#0d1117", border_color=BORDER,
+                                        text_color=TEXT)
+        self._data_path.insert(0, r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.9\breeze_data")
+        self._data_path.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(path_row, text="…", width=32, height=30, font=FONT_BODY,
+                      fg_color="#21262d", command=self._browse).pack(side="left", padx=(4, 0))
 
-        param_label(r2, "To:").pack(side="left", padx=(0, 6))
-        self.to_date = make_entry(r2, width=110, placeholder="YYYY-MM-DD",
-                                  initial=date.today().strftime("%Y-%m-%d"))
-        self.to_date.pack(side="left", padx=(0, 20))
+        # Dates
+        label("FROM DATE")
+        self._from = ctk.CTkEntry(frame, font=FONT_SMALL, height=30, width=140,
+                                   fg_color="#0d1117", border_color=BORDER, text_color=TEXT)
+        self._from.insert(0, "2026-01-02")
+        self._from.pack(anchor="w", padx=12)
 
-        # Run / Stop buttons
-        self.run_btn = ctk.CTkButton(r2, text="▶  RUN BACKTEST", width=180,
-                                      height=36, font=FU(13, "bold"),
-                                      fg_color=GOLD, hover_color=GOLD_DARK,
-                                      text_color=NAVY, corner_radius=8,
-                                      command=self._on_run)
-        self.run_btn.pack(side="left", padx=(0, 8))
+        label("TO DATE")
+        self._to = ctk.CTkEntry(frame, font=FONT_SMALL, height=30, width=140,
+                                 fg_color="#0d1117", border_color=BORDER, text_color=TEXT)
+        self._to.insert(0, "2026-04-21")
+        self._to.pack(anchor="w", padx=12)
 
-        self.stop_btn = ctk.CTkButton(r2, text="⏹ STOP", width=90,
-                                       height=36, font=FU(12, "bold"),
-                                       fg_color="#8B2020", hover_color="#6B1010",
-                                       text_color=TEXT, corner_radius=8,
-                                       command=self._on_stop, state="disabled")
-        self.stop_btn.pack(side="left")
+        # Mode
+        label("BACKTEST MODE", GOLD)
+        self._mode = ctk.CTkSegmentedButton(
+            frame, values=["Single Run", "Grid Search", "Fast Grid"],
+            font=FONT_SMALL, height=32,
+            selected_color=ACCENT, selected_hover_color=ACCENT_HOVER,
+            unselected_color="#21262d", unselected_hover_color="#30363d",
+            text_color=TEXT
+        )
+        self._mode.set("Single Run")
+        self._mode.pack(fill="x", padx=12, pady=(2, 8))
 
-    def _build_single_page(self):
-        p = ctk.CTkFrame(self.content_area, fg_color="transparent")
-        self.single_panel = SingleRunPanel(p)
-        self.single_panel.pack(fill="both", expand=True)
-        self.pages["single"] = p
+        # Results summary
+        label("RESULTS SUMMARY", GOLD)
+        self._summary = ctk.CTkTextbox(frame, font=FONT_MONO,
+                                        fg_color="#010409", text_color=TEXT,
+                                        corner_radius=4, border_width=1,
+                                        border_color=BORDER)
+        self._summary.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self._summary.insert("end", "Results will appear here after run...\n")
+        self._summary.configure(state="disabled")
 
-    def _build_grid_page(self):
-        p = ctk.CTkFrame(self.content_area, fg_color="transparent")
-        self.grid_panel = GridSearchPanel(p)
-        self.grid_panel.pack(fill="both", expand=True)
-        self.pages["grid"] = p
+    # ─── Events ──────────────────────────────────────────────────────────────
 
-    def _build_results_page(self):
-        p = ctk.CTkFrame(self.content_area, fg_color="transparent")
-        ctk.CTkLabel(p, text="Performance Metrics — Last Run",
-                     font=FU(13, "bold"), text_color=GOLD).pack(
-                         anchor="w", padx=4, pady=(8, 6))
-        self.results_table = ResultsTable(p)
-        self.results_table.pack(fill="both", expand=True)
-        self.pages["results"] = p
-
-    # ─── Navigation ──────────────────────────────────────────────────────────
-
-    def _show_page(self, key):
-        for k, p in self.pages.items():
-            p.pack_forget()
-        self.pages[key].pack(fill="both", expand=True)
-        # Update sidebar button colors
-        for k, btn in self._nav_btns.items():
-            btn.configure(
-                fg_color=GOLD if k == key else "transparent",
-                text_color=NAVY if k == key else TEXT_DIM,
-                font=FU(13, "bold") if k == key else FU(13))
-        self._current_page = key
-
-    # ─── Run Logic ───────────────────────────────────────────────────────────
-
-    def _browse_path(self):
-        d = filedialog.askdirectory(title="Select breeze_data folder")
-        if d:
-            self.data_path_var.set(d)
+    def _browse(self):
+        path = filedialog.askdirectory(title="Select breeze_data folder")
+        if path:
+            self._data_path.delete(0, "end")
+            self._data_path.insert(0, path)
 
     def _on_run(self):
-        if self._running: return
-        mode = getattr(self, "_current_page", "single")
-        if mode == "results": mode = "single"
-
-        from_d = self.from_date.get().strip()
-        to_d   = self.to_date.get().strip()
-        if not from_d or not to_d:
-            messagebox.showwarning("Missing dates", "Please enter From and To dates.")
+        if self._running:
             return
-        try:
-            datetime.strptime(from_d, "%Y-%m-%d")
-            datetime.strptime(to_d,   "%Y-%m-%d")
-        except ValueError:
-            messagebox.showerror("Invalid date", "Dates must be YYYY-MM-DD format.")
-            return
+        self._running = True
+        self._last_rpt = None
+        self._open_btn.configure(state="disabled")
+        self._run_btn.configure(state="disabled", text="⏳  Running...")
+        self._status.configure(text="● Running", text_color=GOLD)
+        self._prog.set(0)
+        self._clear_log()
 
-        data_path = self.data_path_var.get().strip()
+        # Redirect stdout → queue
+        sys.stdout = _QueueStream(self._q)
+        sys.stderr = _QueueStream(self._q)
 
-        if mode == "single":
-            try:
-                sp = self.single_panel.get_params()
-            except ValueError as e:
-                messagebox.showerror("Invalid parameters", str(e)); return
-            self._start_thread("single", from_d, to_d, data_path, sp=sp)
-
-        elif mode == "grid":
-            try:
-                gc = self.grid_panel.get_grid_config()
-            except ValueError as e:
-                messagebox.showerror("Invalid grid config", str(e)); return
-            self._start_thread("grid", from_d, to_d, data_path, gc=gc)
-
-        else:
-            self._start_thread("stats", from_d, to_d, data_path)
+        cfg = self._collect()
+        self._thread = threading.Thread(target=self._worker, args=(cfg,), daemon=True)
+        self._thread.start()
 
     def _on_stop(self):
-        self._stop_requested = True
-        self.log.append("\n⛔ Stop requested — will finish current day then exit.\n")
-        self._set_idle()
+        self._running = False
+        self._q.put("⚠️  Stop requested")
 
-    def _start_thread(self, mode, from_d, to_d, data_path, sp=None, gc=None):
-        self._running        = True
-        self._stop_requested = False
-        self.run_btn.configure(state="disabled", fg_color=BORDER)
-        self.stop_btn.configure(state="normal")
-        self.status_lbl.configure(text="● Running…", text_color=GREEN)
-        self.log.append(f"\n{'─'*60}\n▶  {mode.upper()}  {from_d} → {to_d}\n{'─'*60}\n")
+    def _collect(self) -> dict:
+        v = self._vars
+        def get(k): return v[k].get() if isinstance(v[k], (ctk.CTkEntry,)) else v[k].get()
+        return {
+            "data_path":              self._data_path.get(),
+            "from_date":              self._from.get(),
+            "to_date":                self._to.get(),
+            "mode":                   self._mode.get(),
+            "atm_scan_start":         get("atm_scan_start"),
+            "atm_scan_end":           get("atm_scan_end"),
+            "max_premium_diff":       float(get("max_premium_diff")),
+            "hedge_pct":              float(get("hedge_pct")),
+            "vix_intraday_threshold": float(get("vix_intraday_threshold")),
+            "sl_buffer":              float(get("sl_buffer")),
+            "atr_timeframe":          get("atr_timeframe"),
+            "atr_period":             int(get("atr_period")),
+            "atr_multiplier":         float(get("atr_multiplier")),
+            "hedge_trail_step":       float(get("hedge_trail_step")),
+            "eod_exit_time":          get("eod_exit_time"),
+            "lot_size":               int(get("lot_size")),
+            "grid_atr_tf":            get("grid_atr_tf"),
+            "grid_atr_per":           get("grid_atr_per"),
+            "grid_atr_mult":          get("grid_atr_mult"),
+            "grid_hedge_pct":         get("grid_hedge_pct"),
+            "grid_eod":               get("grid_eod"),
+            "grid_prem_diff":         get("grid_prem_diff"),
+        }
 
-        def target():
-            old_stdout = sys.stdout
-            sys.stdout = _QueueStream(self._q)
-            try:
-                # Add project folder to path so imports resolve inside EXE
-                proj = str(Path(__file__).parent)
-                if proj not in sys.path:
-                    sys.path.insert(0, proj)
+    # ─── Worker (background thread) ──────────────────────────────────────────
 
-                from config      import StrategyParams, GridConfig
-                from data_loader import DataLoader, PathConfig
-                from day_simulator import DaySimulator
-                from metrics     import compute_metrics
-                from report      import generate_report
-                import pandas as pd
+    def _worker(self, cfg: dict):
+        try:
+            from gui_runner import run_backtest
+            report = run_backtest(cfg, lambda v: self.after(0, lambda: self._prog.set(v)))
+            if report:
+                self._last_rpt = report
+                self.after(0, lambda: self._open_btn.configure(state="normal"))
+        except Exception as e:
+            import traceback
+            print(f"❌ Error: {e}")
+            print(traceback.format_exc())
+        finally:
+            sys.stdout = self._orig_stdout
+            sys.stderr = self._orig_stderr
+            self._running = False
+            self.after(0, self._done)
 
-                paths = PathConfig(base_path=data_path)
+    def _done(self):
+        self._run_btn.configure(state="normal", text="▶  RUN BACKTEST")
+        self._status.configure(text="● Done", text_color=ACCENT)
+        self._prog.set(1)
 
-                if mode == "stats":
-                    loader = DataLoader(paths)
-                    loader.stats(from_date=from_d, to_date=to_d)
-                    self._q.put(("done", 0))
-                    return
-
-                # ── Single run ──────────────────────────────────────────
-                if mode == "single":
-                    params = StrategyParams()
-                    for k, v in (sp or {}).items():
-                        if hasattr(params, k):
-                            setattr(params, k, v)
-
-                    print(f"\n{'='*60}")
-                    print(f"  SINGLE BACKTEST RUN")
-                    print(f"  {from_d} → {to_d}")
-                    print(f"  Params: {params}")
-                    print(f"{'='*60}\n")
-
-                    loader = DataLoader(paths)
-                    loaded = loader.preload_all(from_d, to_d)
-                    if not loaded:
-                        print(f"No valid data found for {from_d} – {to_d}")
-                        self._q.put(("done", 1)); return
-
-                    sim     = DaySimulator(params)
-                    results = []
-                    for date_str, day in loaded:
-                        if self._stop_requested: break
-                        res  = sim.simulate(day)
-                        icon = "✅" if res.status == "ok" else "⚠️ "
-                        print(f"  {date_str}  {icon}  PnL={res.total_pnl:>10,.2f}  "
-                              f"ATM={res.atm_strike}  "
-                              f"CE={res.ce_exit_reason or '-'}  "
-                              f"PE={res.pe_exit_reason or '-'}")
-                        results.append(res)
-
-                    m = compute_metrics(results, params.to_dict())
-                    self._print_metrics(m)
-                    generate_report(
-                        pd.DataFrame([m]), results,
-                        output_path=f"single_run_{from_d}_{to_d}.xlsx"
-                    )
-
-                # ── Grid search ─────────────────────────────────────────
-                elif mode == "grid":
-                    from grid_runner import GridRunner
-                    grid = GridConfig()
-                    if gc:
-                        for k, v in gc.items():
-                            if k != "fast_mode" and hasattr(grid, k):
-                                setattr(grid, k, v)
-                    if gc and gc.get("fast_mode"):
-                        grid.atr_timeframes  = ["5min"]
-                        grid.atr_periods     = [14]
-                        grid.atr_multipliers = [1.0, 1.5]
-                        grid.eod_exit_times  = ["15:20"]
-
-                    total = grid.total_combinations()
-                    print(f"\n{'='*60}")
-                    print(f"  GRID SEARCH  —  {total:,} combinations")
-                    print(f"  {from_d} → {to_d}")
-                    print(f"{'='*60}\n")
-
-                    runner     = GridRunner(paths, grid)
-                    run_result = runner.run(from_date=from_d, to_date=to_d)
-                    run_result.print_summary(n=20)
-
-                    best_params = run_result.best_params()
-                    loader      = DataLoader(paths)
-                    loaded      = loader.preload_all(from_d, to_d)
-                    sim         = DaySimulator(best_params)
-                    best_daily  = [sim.simulate(day) for _, day in loaded]
-                    generate_report(
-                        run_result.ranked, best_daily,
-                        output_path=f"grid_search_{from_d}_{to_d}.xlsx"
-                    )
-
-                self._q.put(("done", 0))
-
-            except Exception as exc:
-                import traceback
-                self._q.put(("log", f"\nERROR: {exc}\n{traceback.format_exc()}\n"))
-                self._q.put(("done", -1))
-            finally:
-                sys.stdout = old_stdout
-
-        threading.Thread(target=target, daemon=True).start()
-
-    @staticmethod
-    def _print_metrics(m: dict):
-        print(f"\n{'─'*50}")
-        print(f"  Total P&L:         ₹{m.get('total_pnl', 0):>12,.2f}")
-        print(f"  Traded days:       {m.get('traded_days', 0)}")
-        print(f"  Win rate:          {m.get('win_rate_pct', 0):.1f}%")
-        print(f"  Avg daily P&L:     ₹{m.get('avg_daily_pnl', 0):>12,.2f}")
-        print(f"  Sharpe (annual):   {m.get('sharpe', 0):.3f}")
-        print(f"  Max drawdown:      ₹{m.get('max_drawdown', 0):>12,.2f}")
-        print(f"  Profit factor:     {m.get('profit_factor', 0):.3f}")
-        print(f"  Max consec losses: {m.get('max_consec_losses', 0)}")
-        print(f"{'─'*50}\n")
+    # ─── Log ─────────────────────────────────────────────────────────────────
 
     def _poll_queue(self):
         try:
             while True:
-                kind, data = self._q.get_nowait()
-                if kind == "log":
-                    self.log.append(data)
-                    self._parse_metrics_from_log(data)
-                elif kind == "done":
-                    rc = data
-                    self.log.append(f"\n{'─'*60}\n"
-                                    f"{'✅ Completed' if rc == 0 else '❌ Exited (code '+str(rc)+')'}\n"
-                                    f"{'─'*60}\n")
-                    self._set_idle()
+                msg = self._q.get_nowait()
+                self._log.configure(state="normal")
+                self._log.insert("end", msg + "\n")
+                self._log.see("end")
+                self._log.configure(state="disabled")
+
+                # Mirror metrics to summary panel
+                if any(k in msg for k in ["Total P&L", "Win rate", "Sharpe",
+                                            "Profit factor", "Traded days",
+                                            "Max drawdown", "═", "─"]):
+                    self._summary.configure(state="normal")
+                    self._summary.insert("end", msg + "\n")
+                    self._summary.see("end")
+                    self._summary.configure(state="disabled")
         except queue.Empty:
             pass
-        self.after(80, self._poll_queue)
+        self.after(100, self._poll_queue)
 
-    def _set_idle(self):
-        self._running = False
-        self.run_btn.configure(state="normal", fg_color=GOLD)
-        self.stop_btn.configure(state="disabled")
-        self.status_lbl.configure(text="● Idle", text_color=TEXT_DIM)
+    def _clear_log(self):
+        self._log.configure(state="normal")
+        self._log.delete("1.0", "end")
+        self._log.configure(state="disabled")
+        self._summary.configure(state="normal")
+        self._summary.delete("1.0", "end")
+        self._summary.configure(state="disabled")
 
-    # ─── Metric scraping from console output ─────────────────────────────────
+    def _open_report(self):
+        if self._last_rpt and Path(self._last_rpt).exists():
+            os.startfile(self._last_rpt)
 
-    _metrics_buf = {}
-
-    def _parse_metrics_from_log(self, line: str):
-        """Scrape key metrics from console output and update sidebar + results."""
-        import re
-        m = re.search(r"Total P&L:\s+₹([\d,\.\-]+)", line)
-        if m:
-            val = m.group(1).replace(",", "")
-            try:
-                pnl = float(val)
-                color = GREEN if pnl >= 0 else RED
-                self.sb_pnl.configure(text=f"₹{pnl:,.0f}", text_color=color)
-                self._metrics_buf["total_pnl"] = pnl
-            except: pass
-
-        m = re.search(r"Win rate:\s+([\d\.]+)%", line)
-        if m:
-            wr = float(m.group(1))
-            color = GREEN if wr >= 50 else ORANGE
-            self.sb_wr.configure(text=f"{wr:.1f}%", text_color=color)
-            self._metrics_buf["win_rate_pct"] = wr
-
-        m = re.search(r"Sharpe.*?:\s+([\d\.\-]+)", line)
-        if m:
-            sh = float(m.group(1))
-            self.sb_sh.configure(text=f"{sh:.3f}")
-            self._metrics_buf["sharpe"] = sh
-
-        m = re.search(r"Max drawdown:\s+₹([\d,\.\-]+)", line)
-        if m:
-            dd = float(m.group(1).replace(",", ""))
-            self.sb_dd.configure(text=f"₹{dd:,.0f}", text_color=RED if dd < 0 else TEXT)
-            self._metrics_buf["max_drawdown"] = dd
-
-        # Also scrape other metrics for results table
-        patterns = {
-            "traded_days":      r"Traded days:\s+(\d+)",
-            "skipped_days":     r"Skipped days:\s+(\d+)",
-            "avg_daily_pnl":    r"Avg daily P&L:\s+₹([\d,\.\-]+)",
-            "profit_factor":    r"Profit factor:\s+([\d\.]+)",
-            "max_consec_losses":r"Max consec losses:\s+(\d+)",
-        }
-        for key, pat in patterns.items():
-            m2 = re.search(pat, line)
-            if m2:
-                try:
-                    v = m2.group(1).replace(",", "")
-                    self._metrics_buf[key] = float(v)
-                except: pass
-
-        # When we get "Completed", populate results table
-        if "Completed" in line or "✅" in line:
-            if self._metrics_buf:
-                self.results_table.populate(self._metrics_buf)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # Check dependencies
-    try:
-        import customtkinter
-    except ImportError:
-        print("Please install customtkinter:  pip install customtkinter")
-        sys.exit(1)
-
     app = App()
     app.mainloop()

@@ -1,15 +1,27 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .env
 venv/
 .venv/
+
+# Backtest outputs
 *.xlsx
 *.log
 backtest.log
+
+# Data — never commit breeze CSVs
 breeze_data/
 INDVIX_1SEC/
 NIFTY_SPOT_1SEC/
 NIFTY_OPTIONS_1SEC/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# OS
 .DS_Store
 Thumbs.db

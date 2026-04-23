@@ -1,0 +1,62 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: nifty_backtest
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install customtkinter darkdetect
+          pip install pandas numpy openpyxl xlsxwriter
+
+      - name: Build EXE with PyInstaller
+        working-directory: nifty_backtest
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name BalfundBacktest `
+            --hidden-import customtkinter `
+            --hidden-import darkdetect `
+            --collect-all customtkinter `
+            --collect-all darkdetect `
+            --hidden-import pandas `
+            --hidden-import numpy `
+            --hidden-import xlsxwriter `
+            --hidden-import openpyxl `
+            --hidden-import config `
+            --hidden-import data_loader `
+            --hidden-import strategy `
+            --hidden-import day_simulator `
+            --hidden-import grid_runner `
+            --hidden-import metrics `
+            --hidden-import report `
+            --hidden-import gui_runner `
+            gui.py
+
+      - name: Upload EXE as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BalfundBacktest-Windows
+          path: nifty_backtest/dist/BalfundBacktest.exe
+          retention-days: 30

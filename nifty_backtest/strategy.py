@@ -208,16 +208,13 @@ def resample_to_timeframe(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     if timeframe == "1min":
         return df
 
-    freq_map = {"5min": "5T", "15min": "15T", "30min": "30T"}
+    freq_map = {"5min": "5min", "15min": "15min", "30min": "30min"}
     freq = freq_map.get(timeframe, "5T")
 
-    resampled = df.resample(freq, label="right", closed="right").agg({
-        "open":   "first",
-        "high":   "max",
-        "low":    "min",
-        "close":  "last",
-        "volume": "sum",
-    }).dropna(subset=["close"])
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if "volume" in df.columns:
+        agg["volume"] = "sum"
+    resampled = df.resample(freq, label="right", closed="right").agg(agg).dropna(subset=["close"])
     return resampled
 
 
@@ -288,15 +285,18 @@ def compute_hedge_step_sl(
 # NIFTY EXPIRY UTILITIES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_nearest_expiry(trading_date: str, expiry_weekday: int = 3) -> str:
-    """
-    Get nearest weekly expiry on or after trading_date.
-    expiry_weekday: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri
+_EXPIRY_CHANGE_DATE_STR = "2025-09-01"
 
-    Returns expiry date as "YYYY-MM-DD" string.
+def get_nearest_expiry(trading_date: str, expiry_weekday: int = None) -> str:
+    """
+    Get nearest NIFTY weekly expiry on or after trading_date.
+    Before Sep 1 2025: Thursday (3)
+    From  Sep 1 2025 : Tuesday  (1)
     """
     from datetime import date, timedelta
     d = date.fromisoformat(trading_date)
+    if expiry_weekday is None:
+        expiry_weekday = 1 if trading_date >= _EXPIRY_CHANGE_DATE_STR else 3
     days_ahead = expiry_weekday - d.weekday()
     if days_ahead < 0:
         days_ahead += 7
@@ -317,7 +317,12 @@ def find_atm_strike_from_daydata(
 ) -> Tuple[Optional[int], Optional[float], Optional[float], Optional[str]]:
     """
     Find ATM strike from DayData.options_1min dict.
-    Looks at all (strike, CE) and (strike, PE) pairs in the scan window.
+
+    Strategy:
+    1. Use NIFTY spot price at scan_start to narrow candidates to ±500pts around spot
+    2. For each candidate strike, get last available CE and PE close in the scan window
+       (does NOT require exact timestamp match — handles sparse tick data)
+    3. Pick strike with minimum |CE - PE| within max_premium_diff
     """
     best_strike  = None
     best_ce_prem = None
@@ -325,15 +330,26 @@ def find_atm_strike_from_daydata(
     best_diff    = float("inf")
     best_time    = None
 
+    # Step 1: Get spot price to narrow ATM candidates
+    spot_price = _get_spot_at_time(day, scan_start, scan_end)
+
     # Collect all strikes that have both CE and PE
     ce_strikes = {s for (s, t) in day.options_1min if t == "CE"}
     pe_strikes = {s for (s, t) in day.options_1min if t == "PE"}
-    common     = ce_strikes & pe_strikes
+    common     = sorted(ce_strikes & pe_strikes)
 
     if not common:
         return None, None, None, None
 
-    for strike in common:
+    # Step 2: Narrow to ±500pts around spot if spot is available
+    if spot_price:
+        candidates = [s for s in common if abs(s - spot_price) <= 500]
+        if not candidates:
+            candidates = common  # fallback: use all strikes
+    else:
+        candidates = common
+
+    for strike in candidates:
         ce_df = day.options_1min[(strike, "CE")]
         pe_df = day.options_1min[(strike, "PE")]
 
@@ -341,31 +357,53 @@ def find_atm_strike_from_daydata(
             continue
 
         # Filter to scan window
-        ce_win = ce_df[ce_df.index.strftime("%H:%M").between(scan_start, scan_end)]
-        pe_win = pe_df[pe_df.index.strftime("%H:%M").between(scan_start, scan_end)]
+        ce_times = ce_df.index.strftime("%H:%M")
+        pe_times = pe_df.index.strftime("%H:%M")
+        ce_win = ce_df[(ce_times >= scan_start) & (ce_times <= scan_end)]
+        pe_win = pe_df[(pe_times >= scan_start) & (pe_times <= scan_end)]
+
+        # Extend window backward if no data found (up to 09:15)
+        if ce_win.empty:
+            ce_win = ce_df[ce_df.index.strftime("%H:%M") <= scan_end]
+        if pe_win.empty:
+            pe_win = pe_df[pe_df.index.strftime("%H:%M") <= scan_end]
 
         if ce_win.empty or pe_win.empty:
             continue
 
-        # Find matching timestamps
-        common_ts = ce_win.index.intersection(pe_win.index)
-        for ts in common_ts:
-            ce_p = ce_win.at[ts, "close"]
-            pe_p = pe_win.at[ts, "close"]
-            if pd.isna(ce_p) or pd.isna(pe_p) or ce_p <= 0 or pe_p <= 0:
-                continue
-            diff = abs(ce_p - pe_p)
-            if diff < best_diff:
-                best_diff    = diff
-                best_strike  = strike
-                best_ce_prem = float(ce_p)
-                best_pe_prem = float(pe_p)
-                best_time    = ts.strftime("%H:%M")
+        # Use last available close in window for each leg independently
+        ce_p = float(ce_win["close"].iloc[-1])
+        pe_p = float(pe_win["close"].iloc[-1])
+        ts   = max(ce_win.index[-1], pe_win.index[-1])
+
+        if pd.isna(ce_p) or pd.isna(pe_p) or ce_p <= 0 or pe_p <= 0:
+            continue
+
+        diff = abs(ce_p - pe_p)
+        if diff < best_diff:
+            best_diff    = diff
+            best_strike  = strike
+            best_ce_prem = ce_p
+            best_pe_prem = pe_p
+            best_time    = ts.strftime("%H:%M")
 
     if best_diff > max_premium_diff or best_strike is None:
         return None, None, None, None
 
     return best_strike, best_ce_prem, best_pe_prem, best_time
+
+
+def _get_spot_at_time(day, scan_start: str, scan_end: str) -> Optional[float]:
+    """Get NIFTY spot price during the scan window from spot_1min data."""
+    if day.spot_1min is None or day.spot_1min.empty:
+        return None
+    times = day.spot_1min.index.strftime("%H:%M")
+    win   = day.spot_1min[(times >= scan_start) & (times <= scan_end)]
+    if win.empty:
+        win = day.spot_1min[times <= scan_end]
+    if win.empty:
+        return None
+    return float(win["close"].iloc[-1])
 
 
 def find_hedge_strike_from_daydata(

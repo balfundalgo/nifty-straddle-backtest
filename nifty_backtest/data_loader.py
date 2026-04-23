@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PathConfig:
     """Configure folder paths for local data."""
-    base_path: str = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.2\breeze_data"
+    base_path: str = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.9\breeze_data"
 
     @property
     def vix_dir(self) -> Path:
@@ -130,6 +130,29 @@ class DataLoader:
         self._cache[cache_key] = day
         return day
 
+    def _get_available_expiry_folders(self) -> List[str]:
+        """Return sorted list of available expiry dates from actual options folders."""
+        opts_dir = self.paths.options_dir
+        if not opts_dir.exists():
+            return []
+        return sorted([d.name for d in opts_dir.iterdir()
+                       if d.is_dir() and _is_valid_date(d.name)])
+
+    def _find_actual_expiry(self, date_str: str, available_expiries: List[str]) -> str:
+        """
+        Find nearest available expiry folder on or after date_str (within 8 days).
+        Handles holiday-shifted expiries by using real folder names.
+        Falls back to computed expiry if no folder found.
+        """
+        for expiry in available_expiries:
+            if expiry < date_str:
+                continue
+            days_diff = (date.fromisoformat(expiry) - date.fromisoformat(date_str)).days
+            if days_diff <= 8:
+                return expiry
+        # Fallback: compute mathematically
+        return _get_nearest_expiry(date_str)
+
     def get_available_trading_dates(
         self,
         from_date: str,
@@ -138,18 +161,22 @@ class DataLoader:
     ) -> List[Tuple[str, str]]:
         """
         Scan NIFTY_SPOT_1SEC folder to find all available trading dates.
-        Returns list of (date_str, expiry_str) tuples.
-        If expiry_map not provided, auto-computes Thursday expiry.
+        Expiry is determined from actual options folder names — handles
+        holiday-shifted expiries automatically.
         """
         spot_dir = self.paths.spot_dir
         if not spot_dir.exists():
             raise FileNotFoundError(f"Spot data folder not found: {spot_dir}")
 
+        # Pre-load actual expiry folders once
+        available_expiries = self._get_available_expiry_folders()
+        logger.info(f"Found {len(available_expiries)} expiry folders in options data")
+
         csv_files = sorted(spot_dir.glob("*.csv"))
         results   = []
 
         for f in csv_files:
-            date_str = f.stem  # filename without .csv
+            date_str = f.stem
             if not _is_valid_date(date_str):
                 continue
             if not (from_date <= date_str <= to_date):
@@ -158,7 +185,7 @@ class DataLoader:
             expiry_str = (
                 expiry_map.get(date_str)
                 if expiry_map
-                else _get_nearest_thursday(date_str)
+                else self._find_actual_expiry(date_str, available_expiries)
             )
             results.append((date_str, expiry_str))
 
@@ -397,10 +424,9 @@ def _resample_1min(df: pd.DataFrame, date_str: str) -> pd.DataFrame:
     df = df.copy()
     df.set_index("datetime", inplace=True)
 
-    # Filter to market hours only
-    date_prefix = f"{date_str} "
-    mkt_open    = pd.Timestamp(f"{date_str} 09:15:00")
-    mkt_close   = pd.Timestamp(f"{date_str} 15:30:00")
+    # Filter to market hours: 09:15 – 15:30
+    mkt_open  = pd.Timestamp(f"{date_str} 09:15:00")
+    mkt_close = pd.Timestamp(f"{date_str} 15:30:00")
     df = df[(df.index >= mkt_open) & (df.index <= mkt_close)]
 
     if df.empty:
@@ -417,7 +443,7 @@ def _resample_1min(df: pd.DataFrame, date_str: str) -> pd.DataFrame:
         agg_dict["open_interest"] = "last"
 
     resampled = (
-        df.resample("1T", label="right", closed="right")
+        df.resample("1min", label="right", closed="right")
         .agg(agg_dict)
         .dropna(subset=["close"])
     )
@@ -462,7 +488,7 @@ def _find_expiry_folder(options_dir: Path, expiry_str: str) -> Optional[Path]:
         if not sub.is_dir():
             continue
         try:
-            folder_date = pd.to_datetime(sub.name, dayfirst=True)
+            folder_date = pd.to_datetime(sub.name, dayfirst=False, format="mixed")
             target_date = pd.to_datetime(expiry_str)
             if folder_date.date() == target_date.date():
                 return sub
@@ -481,10 +507,22 @@ def _is_valid_date(s: str) -> bool:
         return False
 
 
-def _get_nearest_thursday(date_str: str) -> str:
-    """Return the nearest Thursday on or after date_str."""
+# NIFTY expiry weekday changed: Thursday (3) before Sep 1 2025, Tuesday (1) from Sep 1 2025
+_EXPIRY_CHANGE_DATE = date(2025, 9, 1)
+
+def _get_nearest_expiry(date_str: str) -> str:
+    """
+    Return the nearest NIFTY weekly expiry on or after date_str.
+    Before Sep 1 2025 : Thursday (weekday=3)
+    From  Sep 1 2025  : Tuesday  (weekday=1)
+    """
     d = date.fromisoformat(date_str)
-    days_ahead = 3 - d.weekday()   # Thursday = 3
+    expiry_weekday = 1 if d >= _EXPIRY_CHANGE_DATE else 3  # Tue=1, Thu=3
+    days_ahead = expiry_weekday - d.weekday()
     if days_ahead < 0:
         days_ahead += 7
     return (d + timedelta(days=days_ahead)).isoformat()
+
+# Keep old name as alias for any existing callers
+def _get_nearest_thursday(date_str: str) -> str:
+    return _get_nearest_expiry(date_str)

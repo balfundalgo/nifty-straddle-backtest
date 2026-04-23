@@ -92,7 +92,7 @@ class GridConfig:
     """
 
     # ATM scan window
-    atm_scan_starts:  List[str]   = field(default_factory=lambda: ["09:16", "09:17"])
+    atm_scan_starts:  List[str]   = field(default_factory=lambda: ["09:16", "09:17", "09:18"])
     atm_scan_ends:    List[str]   = field(default_factory=lambda: ["09:20", "09:21"])
     max_premium_diffs: List[float] = field(default_factory=lambda: [10.0, 20.0, 30.0])
 
