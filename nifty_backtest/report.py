@@ -232,5 +232,235 @@ def generate_report(
         ws4.set_column(1, 1, 60)
         ws4.set_column(2, 2, 15)
 
+        # ═══════════════════════════════════════════════════════════════════
+        # Sheet 5: Deep Analysis
+        # ═══════════════════════════════════════════════════════════════════
+        ws5 = wb.add_worksheet("Deep_Analysis")
+        writer.sheets["Deep_Analysis"] = ws5
+        _write_deep_analysis(ws5, wb, daily_results_best,
+                              hdr_fmt, text_fmt, green_fmt, red_fmt,
+                              money_fmt, title_fmt, int_fmt)
+
     print(f"\n✅ Report saved: {output_path}")
     return output_path
+
+
+def _write_deep_analysis(ws, wb, results, hdr_fmt, text_fmt,
+                          green_fmt, red_fmt, money_fmt, title_fmt, int_fmt):
+    """Write deep analysis sheet with VIX breakdown, exit analysis, fallback stats."""
+    import numpy as np
+    from metrics import results_to_df
+
+    df = results_to_df(results)
+    ok = df[df["status"] == "ok"].copy()
+
+    if ok.empty:
+        ws.write(0, 0, "No traded days to analyse.")
+        return
+
+    ok["total_pnl"]    = pd.to_numeric(ok["total_pnl"],    errors="coerce").fillna(0)
+    ok["vix_at_entry"] = pd.to_numeric(ok["vix_at_entry"], errors="coerce")
+    ok["is_fallback"]  = ok["notes"].str.contains("FALLBACK", na=False)
+
+    muted_fmt  = wb.add_format({"font_color": "#8b949e", "border": 1})
+    gold_fmt   = wb.add_format({"bold": True, "font_color": "#e3b341",
+                                 "bg_color": "#161b22"})
+    sub_fmt    = wb.add_format({"bold": True, "font_color": "#58a6ff",
+                                 "border": 1, "bg_color": "#0d1117"})
+    pct_fmt2   = wb.add_format({"num_format": "0.0%", "border": 1})
+
+    row = 0
+
+    def section(title):
+        nonlocal row
+        ws.write(row, 0, title, gold_fmt)
+        row += 1
+
+    def write_row(label, *values, fmts=None):
+        nonlocal row
+        ws.write(row, 0, label, text_fmt)
+        for i, v in enumerate(values):
+            fmt = fmts[i] if fmts and i < len(fmts) else text_fmt
+            ws.write(row, i + 1, v, fmt)
+        row += 1
+
+    def header_row(*cols):
+        nonlocal row
+        for i, c in enumerate(cols):
+            ws.write(row, i, c, hdr_fmt)
+        row += 1
+
+    ws.set_column(0, 0, 30)
+    ws.set_column(1, 8, 16)
+
+    # ── 1. Overall summary ────────────────────────────────────────────────
+    section("📊  OVERALL SUMMARY")
+    header_row("Metric", "Value")
+    total_days   = len(df)
+    traded_days  = len(ok)
+    fallback_days= ok["is_fallback"].sum()
+    normal_days  = traded_days - fallback_days
+    pnl_total    = float(ok["total_pnl"].sum())
+    win_rate     = float((ok["total_pnl"] > 0).mean() * 100)
+
+    for lbl, val, fmt in [
+        ("Total calendar days",  total_days,    int_fmt),
+        ("Traded days",          traded_days,   int_fmt),
+        ("Normal ATM days",      normal_days,   int_fmt),
+        ("Fallback ATM days",    fallback_days, int_fmt),
+        ("Total P&L",            pnl_total,     green_fmt if pnl_total >= 0 else red_fmt),
+        ("Win Rate",             win_rate / 100, pct_fmt2),
+    ]:
+        write_row(lbl, val, fmts=[fmt])
+    row += 1
+
+    # ── 2. Normal vs Fallback comparison ─────────────────────────────────
+    section("🎯  NORMAL ATM vs FALLBACK ATM")
+    header_row("Metric", "Normal ATM", "Fallback ATM")
+
+    norm = ok[~ok["is_fallback"]]
+    fall = ok[ok["is_fallback"]]
+
+    def safe_pnl(d): return float(d["total_pnl"].sum()) if len(d) else 0.0
+    def safe_wr(d):  return float((d["total_pnl"] > 0).mean()) if len(d) else 0.0
+    def safe_avg(d): return float(d["total_pnl"].mean()) if len(d) else 0.0
+
+    rows_data = [
+        ("Days",        len(norm),         len(fall),         int_fmt),
+        ("Total P&L",   safe_pnl(norm),    safe_pnl(fall),    money_fmt),
+        ("Win Rate",    safe_wr(norm),      safe_wr(fall),     pct_fmt2),
+        ("Avg P&L/day", safe_avg(norm),    safe_avg(fall),    money_fmt),
+    ]
+    for lbl, v1, v2, fmt in rows_data:
+        ws.write(row, 0, lbl, text_fmt)
+        ws.write(row, 1, v1, fmt)
+        ws.write(row, 2, v2, fmt)
+        row += 1
+    row += 1
+
+    # ── 3. VIX breakdown ──────────────────────────────────────────────────
+    section("📈  VIX REGIME ANALYSIS")
+    header_row("VIX Regime", "Days", "SL Rule", "Total P&L", "Win Rate", "Avg P&L")
+
+    vix = ok["vix_at_entry"].dropna()
+    regimes = [
+        ("VIX < 12  (Low Vol)",      ok[ok["vix_at_entry"] < 12],              "40% + ₹5"),
+        ("VIX 12-16 (Medium)",       ok[(ok["vix_at_entry"]>=12)&(ok["vix_at_entry"]<16)], "25-40% + ₹5"),
+        ("VIX 16-20 (High)",         ok[(ok["vix_at_entry"]>=16)&(ok["vix_at_entry"]<20)], "25% + ₹5"),
+        ("VIX > 20  (Very High)",    ok[ok["vix_at_entry"] >= 20],             "15% + ₹5"),
+    ]
+    for label, grp, sl_rule in regimes:
+        if len(grp) == 0:
+            ws.write(row, 0, label, text_fmt)
+            ws.write(row, 1, 0, int_fmt)
+            ws.write(row, 2, sl_rule, text_fmt)
+            ws.write(row, 3, 0, money_fmt)
+            ws.write(row, 4, "—", text_fmt)
+            ws.write(row, 5, 0, money_fmt)
+        else:
+            pnl = float(grp["total_pnl"].sum())
+            wr  = float((grp["total_pnl"] > 0).mean())
+            avg = float(grp["total_pnl"].mean())
+            ws.write(row, 0, label, text_fmt)
+            ws.write(row, 1, len(grp), int_fmt)
+            ws.write(row, 2, sl_rule, text_fmt)
+            ws.write(row, 3, pnl, green_fmt if pnl >= 0 else red_fmt)
+            ws.write(row, 4, wr,  pct_fmt2)
+            ws.write(row, 5, avg, green_fmt if avg >= 0 else red_fmt)
+        row += 1
+    row += 1
+
+    # ── 4. Exit breakdown ────────────────────────────────────────────────
+    section("🚪  EXIT BREAKDOWN")
+    header_row("Exit Type", "CE Count", "PE Count", "CE % of Days", "PE % of Days")
+
+    exit_types = ["FIXED_SL", "ATR_TRAIL_SL", "EOD"]
+    total = len(ok)
+    for et in exit_types:
+        ce_n = (ok["ce_exit_reason"] == et).sum()
+        pe_n = (ok["pe_exit_reason"] == et).sum()
+        ws.write(row, 0, et, text_fmt)
+        ws.write(row, 1, ce_n, int_fmt)
+        ws.write(row, 2, pe_n, int_fmt)
+        ws.write(row, 3, ce_n / total if total else 0, pct_fmt2)
+        ws.write(row, 4, pe_n / total if total else 0, pct_fmt2)
+        row += 1
+    row += 1
+
+    # ── 5. Both legs SL analysis ─────────────────────────────────────────
+    section("⚠️  SL HIT ANALYSIS")
+    header_row("Scenario", "Days", "Total P&L", "Avg P&L")
+
+    scenarios = [
+        ("Both legs FIXED_SL",
+         ok[(ok["ce_exit_reason"]=="FIXED_SL") & (ok["pe_exit_reason"]=="FIXED_SL")]),
+        ("CE FIXED_SL, PE ATR_TRAIL",
+         ok[(ok["ce_exit_reason"]=="FIXED_SL") & (ok["pe_exit_reason"]=="ATR_TRAIL_SL")]),
+        ("PE FIXED_SL, CE ATR_TRAIL",
+         ok[(ok["pe_exit_reason"]=="FIXED_SL") & (ok["ce_exit_reason"]=="ATR_TRAIL_SL")]),
+        ("Both legs EOD (no SL)",
+         ok[(ok["ce_exit_reason"]=="EOD") & (ok["pe_exit_reason"]=="EOD")]),
+        ("One leg EOD, one FIXED_SL",
+         ok[((ok["ce_exit_reason"]=="EOD")&(ok["pe_exit_reason"]=="FIXED_SL")) |
+            ((ok["pe_exit_reason"]=="EOD")&(ok["ce_exit_reason"]=="FIXED_SL"))]),
+    ]
+    for label, grp in scenarios:
+        pnl = float(grp["total_pnl"].sum()) if len(grp) else 0
+        avg = float(grp["total_pnl"].mean()) if len(grp) else 0
+        ws.write(row, 0, label, text_fmt)
+        ws.write(row, 1, len(grp), int_fmt)
+        ws.write(row, 2, pnl, green_fmt if pnl >= 0 else red_fmt)
+        ws.write(row, 3, avg, green_fmt if avg >= 0 else red_fmt)
+        row += 1
+    row += 1
+
+    # ── 6. Hedge performance ─────────────────────────────────────────────
+    section("🛡️  HEDGE PERFORMANCE")
+    header_row("Metric", "CE Hedge", "PE Hedge")
+
+    ok["ce_hedge_pnl"] = pd.to_numeric(ok.get("ce_hedge_pnl", 0), errors="coerce").fillna(0)
+    ok["pe_hedge_pnl"] = pd.to_numeric(ok.get("pe_hedge_pnl", 0), errors="coerce").fillna(0)
+
+    ce_step = (ok["ce_hedge_exit_reason"] == "STEP_TRAIL_SL").sum()
+    pe_step = (ok["pe_hedge_exit_reason"] == "STEP_TRAIL_SL").sum()
+    ce_eod  = (ok["ce_hedge_exit_reason"] == "EOD").sum()
+    pe_eod  = (ok["pe_hedge_exit_reason"] == "EOD").sum()
+    ce_miss = ok["ce_hedge_exit"].isna().sum()
+    pe_miss = ok["pe_hedge_exit"].isna().sum()
+
+    hedge_rows = [
+        ("Step Trail SL exits",   ce_step, pe_step, int_fmt),
+        ("EOD exits",             ce_eod,  pe_eod,  int_fmt),
+        ("Missing exits",         ce_miss, pe_miss, int_fmt),
+        ("Total Hedge P&L",
+         float(ok["ce_hedge_pnl"].sum()),
+         float(ok["pe_hedge_pnl"].sum()), money_fmt),
+    ]
+    for lbl, v1, v2, fmt in hedge_rows:
+        ws.write(row, 0, lbl, text_fmt)
+        ws.write(row, 1, v1, fmt)
+        ws.write(row, 2, v2, fmt)
+        row += 1
+    row += 1
+
+    # ── 7. Monthly breakdown ─────────────────────────────────────────────
+    section("📅  MONTHLY BREAKDOWN")
+    header_row("Month", "Days", "Total P&L", "Win Rate", "Avg P&L", "Best Day", "Worst Day")
+
+    ok["month"] = pd.to_datetime(ok["date"]).dt.strftime("%Y-%m")
+    for month, grp in ok.groupby("month"):
+        pnl  = float(grp["total_pnl"].sum())
+        wr   = float((grp["total_pnl"] > 0).mean())
+        avg  = float(grp["total_pnl"].mean())
+        best = float(grp["total_pnl"].max())
+        wrst = float(grp["total_pnl"].min())
+        ws.write(row, 0, month, text_fmt)
+        ws.write(row, 1, len(grp), int_fmt)
+        ws.write(row, 2, pnl,  green_fmt if pnl  >= 0 else red_fmt)
+        ws.write(row, 3, wr,   pct_fmt2)
+        ws.write(row, 4, avg,  green_fmt if avg  >= 0 else red_fmt)
+        ws.write(row, 5, best, green_fmt)
+        ws.write(row, 6, wrst, red_fmt)
+        row += 1
+
+    ws.freeze_panes(0, 1)

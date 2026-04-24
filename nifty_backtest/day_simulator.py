@@ -221,11 +221,11 @@ class DaySimulator:
             pe_after = pe[pe.index >= idx_ts]
             result = self._atr_trail_leg(result, pe_after, pe_sl, eod_ts, "pe")
 
-            # PE hedge → EOD if PE didn't hit SL, else already handled
-            if result.pe_exit_reason == "EOD" and not peh.empty:
-                peh_close = peh["close"].iloc[-1] if not peh.empty else None
-                if peh_close:
-                    result.pe_hedge_exit        = float(peh_close)
+            # PE hedge → close at EOD price regardless of how PE sell exited
+            if not peh.empty and result.pe_hedge_exit is None:
+                peh_at_eod = peh[peh.index <= eod_ts]
+                if not peh_at_eod.empty:
+                    result.pe_hedge_exit        = float(peh_at_eod["close"].iloc[-1])
                     result.pe_hedge_exit_reason = "EOD"
 
         elif pe_hit_first:
@@ -243,11 +243,11 @@ class DaySimulator:
             ce_after = ce[ce.index >= idx_ts]
             result = self._atr_trail_leg(result, ce_after, ce_sl, eod_ts, "ce")
 
-            # CE hedge → EOD
-            if result.ce_exit_reason == "EOD" and not ceh.empty:
-                ceh_close = ceh["close"].iloc[-1] if not ceh.empty else None
-                if ceh_close:
-                    result.ce_hedge_exit        = float(ceh_close)
+            # CE hedge → close at EOD price regardless of how CE sell exited
+            if not ceh.empty and result.ce_hedge_exit is None:
+                ceh_at_eod = ceh[ceh.index <= eod_ts]
+                if not ceh_at_eod.empty:
+                    result.ce_hedge_exit        = float(ceh_at_eod["close"].iloc[-1])
                     result.ce_hedge_exit_reason = "EOD"
 
         return result
