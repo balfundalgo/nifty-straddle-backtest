@@ -310,7 +310,7 @@ def get_nearest_expiry(trading_date: str, expiry_weekday: int = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_atm_strike_from_daydata(
-    day,                        # DayData
+    day,
     scan_start: str,
     scan_end: str,
     max_premium_diff: float,
@@ -318,11 +318,11 @@ def find_atm_strike_from_daydata(
     """
     Find ATM strike from DayData.options_1min dict.
 
-    Strategy:
-    1. Use NIFTY spot price at scan_start to narrow candidates to ±500pts around spot
-    2. For each candidate strike, get last available CE and PE close in the scan window
-       (does NOT require exact timestamp match — handles sparse tick data)
-    3. Pick strike with minimum |CE - PE| within max_premium_diff
+    For each candidate strike, uses the LAST available price within the
+    scan window independently for CE and PE (no timestamp matching needed —
+    handles 1-second sparse data correctly).
+
+    If no strike meets max_premium_diff → FALLBACK using spot price at scan_end.
     """
     best_strike  = None
     best_ce_prem = None
@@ -330,10 +330,10 @@ def find_atm_strike_from_daydata(
     best_diff    = float("inf")
     best_time    = None
 
-    # Step 1: Get spot price to narrow ATM candidates
+    # Get spot price to narrow candidates to ±500pts
     spot_price = _get_spot_at_time(day, scan_start, scan_end)
 
-    # Collect all strikes that have both CE and PE
+    # All strikes with both CE and PE data
     ce_strikes = {s for (s, t) in day.options_1min if t == "CE"}
     pe_strikes = {s for (s, t) in day.options_1min if t == "PE"}
     common     = sorted(ce_strikes & pe_strikes)
@@ -341,42 +341,28 @@ def find_atm_strike_from_daydata(
     if not common:
         return None, None, None, None
 
-    # Step 2: Narrow to ±500pts around spot if spot is available
-    if spot_price:
-        candidates = [s for s in common if abs(s - spot_price) <= 500]
+    # Narrow candidates around spot
+    if spot_price and spot_price > 0:
+        candidates = [s for s in common if abs(s - spot_price) <= 600]
         if not candidates:
-            candidates = common  # fallback: use all strikes
+            candidates = common
     else:
         candidates = common
 
+    scan_end_hhmm = scan_end  # e.g. "09:21"
+
     for strike in candidates:
-        ce_df = day.options_1min[(strike, "CE")]
-        pe_df = day.options_1min[(strike, "PE")]
+        ce_df = day.options_1min.get((strike, "CE"), pd.DataFrame())
+        pe_df = day.options_1min.get((strike, "PE"), pd.DataFrame())
 
         if ce_df.empty or pe_df.empty:
             continue
 
-        # Filter to scan window
-        ce_times = ce_df.index.strftime("%H:%M")
-        pe_times = pe_df.index.strftime("%H:%M")
-        ce_win = ce_df[(ce_times >= scan_start) & (ce_times <= scan_end)]
-        pe_win = pe_df[(pe_times >= scan_start) & (pe_times <= scan_end)]
+        # Get last price at or before scan_end for each leg independently
+        ce_p, ce_ts = _last_price_at(ce_df, scan_start, scan_end_hhmm)
+        pe_p, pe_ts = _last_price_at(pe_df, scan_start, scan_end_hhmm)
 
-        # Extend window backward if no data found (up to 09:15)
-        if ce_win.empty:
-            ce_win = ce_df[ce_df.index.strftime("%H:%M") <= scan_end]
-        if pe_win.empty:
-            pe_win = pe_df[pe_df.index.strftime("%H:%M") <= scan_end]
-
-        if ce_win.empty or pe_win.empty:
-            continue
-
-        # Use last available close in window for each leg independently
-        ce_p = float(ce_win["close"].iloc[-1])
-        pe_p = float(pe_win["close"].iloc[-1])
-        ts   = max(ce_win.index[-1], pe_win.index[-1])
-
-        if pd.isna(ce_p) or pd.isna(pe_p) or ce_p <= 0 or pe_p <= 0:
+        if ce_p is None or pe_p is None or ce_p <= 0 or pe_p <= 0:
             continue
 
         diff = abs(ce_p - pe_p)
@@ -385,12 +371,101 @@ def find_atm_strike_from_daydata(
             best_strike  = strike
             best_ce_prem = ce_p
             best_pe_prem = pe_p
-            best_time    = ts.strftime("%H:%M")
+            # Use the later of the two timestamps
+            best_time = max(ce_ts, pe_ts).strftime("%H:%M")
 
-    if best_diff > max_premium_diff or best_strike is None:
+    # ── Normal exit: found strike within premium diff ─────────────────────
+    if best_strike is not None and best_diff <= max_premium_diff:
+        return best_strike, best_ce_prem, best_pe_prem, best_time
+
+    # ── FALLBACK: use spot price to compute ATM ───────────────────────────
+    fallback_strike, fb_ce, fb_pe, fb_time = _atm_fallback(
+        day, common, scan_end_hhmm, spot_price
+    )
+    if fallback_strike is not None:
+        return fallback_strike, fb_ce, fb_pe, f"{fb_time}|FALLBACK"
+
+    return None, None, None, None
+
+
+def _last_price_at(
+    df: pd.DataFrame,
+    scan_start: str,
+    scan_end: str,
+) -> Tuple[Optional[float], Optional[object]]:
+    """
+    Get last close price at or before scan_end.
+    First tries within [scan_start, scan_end], then falls back to
+    anything before scan_end to handle sparse 1-second data.
+    Returns (price, timestamp) or (None, None).
+    """
+    if df.empty:
+        return None, None
+
+    times = df.index.strftime("%H:%M")
+
+    # Try within scan window first
+    win = df[(times >= scan_start) & (times <= scan_end)]
+    if not win.empty:
+        return float(win["close"].iloc[-1]), win.index[-1]
+
+    # Fallback: last tick before scan_end
+    before = df[times <= scan_end]
+    if not before.empty:
+        return float(before["close"].iloc[-1]), before.index[-1]
+
+    return None, None
+
+
+def _atm_fallback(
+    day,
+    common_strikes: list,
+    scan_end: str,
+    spot_price: Optional[float] = None,
+) -> Tuple[Optional[int], Optional[float], Optional[float], Optional[str]]:
+    """
+    Fallback ATM when premium diff rule fails.
+    Uses NIFTY spot at scan_end, rounds to nearest 50-pt strike,
+    picks closest available strike and returns its CE/PE premiums.
+    """
+    # Use pre-computed spot or fetch it
+    spot = spot_price
+    if spot is None or spot <= 0:
+        spot = _get_spot_at_time(day, "09:15", scan_end)
+    if spot is None or spot <= 0:
+        # Last resort: use middle of available strikes as proxy ATM
+        if common_strikes:
+            spot = common_strikes[len(common_strikes) // 2]
+        else:
+            return None, None, None, None
+
+    # Round to nearest 50
+    computed_atm = round(spot / 50) * 50
+
+    # Find nearest available strike
+    best_strike = min(common_strikes, key=lambda s: abs(s - computed_atm))
+
+    # Get CE/PE premiums at scan_end
+    ce_df = day.options_1min.get((best_strike, "CE"), pd.DataFrame())
+    pe_df = day.options_1min.get((best_strike, "PE"), pd.DataFrame())
+
+    if ce_df.empty or pe_df.empty:
         return None, None, None, None
 
-    return best_strike, best_ce_prem, best_pe_prem, best_time
+    ce_win = ce_df[ce_df.index.strftime("%H:%M") <= scan_end]
+    pe_win = pe_df[pe_df.index.strftime("%H:%M") <= scan_end]
+
+    if ce_win.empty or pe_win.empty:
+        return None, None, None, None
+
+    ce_p = float(ce_win["close"].iloc[-1])
+    pe_p = float(pe_win["close"].iloc[-1])
+    ts   = max(ce_win.index[-1], pe_win.index[-1]).strftime("%H:%M")
+
+    if ce_p <= 0 or pe_p <= 0:
+        return None, None, None, None
+
+    return best_strike, ce_p, pe_p, ts
 
 
 def _get_spot_at_time(day, scan_start: str, scan_end: str) -> Optional[float]:
