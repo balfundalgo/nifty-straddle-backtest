@@ -208,8 +208,8 @@ def resample_to_timeframe(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     if timeframe == "1min":
         return df
 
-    freq_map = {"5min": "5min", "15min": "15min", "30min": "30min"}
-    freq = freq_map.get(timeframe, "5T")
+    freq_map = {"1min": "1min", "5min": "5min", "15min": "15min", "30min": "30min", "3min": "3min"}
+    freq = freq_map.get(timeframe, timeframe)  # fallback: use as-is
 
     agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
     if "volume" in df.columns:

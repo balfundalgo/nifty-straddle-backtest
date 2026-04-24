@@ -103,7 +103,7 @@ class GridConfig:
     vix_intraday_thresholds: List[float] = field(default_factory=lambda: [2.0, 3.0, 4.0])
 
     # ATR trailing
-    atr_timeframes:   List[str]   = field(default_factory=lambda: ["1min", "5min", "15min"])
+    atr_timeframes:   List[str]   = field(default_factory=lambda: ["1min", "3min", "5min", "15min"])  # supported: 1min,3min,5min,15min,30min
     atr_periods:      List[int]   = field(default_factory=lambda: [7, 14, 21])
     atr_multipliers:  List[float] = field(default_factory=lambda: [1.0, 1.5, 2.0])
 
