@@ -28,7 +28,13 @@ jobs:
           pip install pyinstaller
           pip install customtkinter darkdetect
           pip install pandas numpy openpyxl xlsxwriter
-          pip install pyarrow
+          pip install "pyarrow==15.0.2"
+
+      - name: Verify pyarrow
+        working-directory: nifty_backtest
+        run: |
+          python -c "import pyarrow; print('pyarrow version:', pyarrow.__version__)"
+          python -c "import pandas; import pyarrow; df = pandas.DataFrame({'a':[1]}); df.to_parquet('test.parquet'); print('parquet write OK')"
 
       - name: Build EXE with PyInstaller
         working-directory: nifty_backtest
@@ -37,14 +43,23 @@ jobs:
             --onefile `
             --windowed `
             --name BalfundBacktest `
-            --hidden-import customtkinter `
-            --hidden-import darkdetect `
+            --runtime-hook hook-pyarrow.py `
             --collect-all customtkinter `
             --collect-all darkdetect `
             --collect-all pyarrow `
+            --hidden-import customtkinter `
+            --hidden-import darkdetect `
             --hidden-import pyarrow `
-            --hidden-import pyarrow.vendored.version `
             --hidden-import pyarrow.lib `
+            --hidden-import pyarrow.pandas_compat `
+            --hidden-import pyarrow.types `
+            --hidden-import pyarrow._lib `
+            --hidden-import pyarrow.vendored `
+            --hidden-import pyarrow.vendored.version `
+            --hidden-import pyarrow._compute `
+            --hidden-import pyarrow._dataset `
+            --hidden-import pyarrow._parquet `
+            --hidden-import pyarrow.parquet `
             --hidden-import pandas `
             --hidden-import pandas.io.parquet `
             --hidden-import numpy `
