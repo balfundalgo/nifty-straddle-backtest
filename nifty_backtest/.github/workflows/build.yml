@@ -28,6 +28,7 @@ jobs:
           pip install pyinstaller
           pip install customtkinter darkdetect
           pip install pandas numpy openpyxl xlsxwriter
+          pip install pyarrow
 
       - name: Build EXE with PyInstaller
         working-directory: nifty_backtest
@@ -40,7 +41,12 @@ jobs:
             --hidden-import darkdetect `
             --collect-all customtkinter `
             --collect-all darkdetect `
+            --collect-all pyarrow `
+            --hidden-import pyarrow `
+            --hidden-import pyarrow.vendored.version `
+            --hidden-import pyarrow.lib `
             --hidden-import pandas `
+            --hidden-import pandas.io.parquet `
             --hidden-import numpy `
             --hidden-import xlsxwriter `
             --hidden-import openpyxl `
