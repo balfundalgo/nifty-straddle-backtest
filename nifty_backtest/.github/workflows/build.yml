@@ -73,6 +73,8 @@ jobs:
             --hidden-import metrics `
             --hidden-import report `
             --hidden-import gui_runner `
+            --hidden-import trial_lock `
+            --hidden-import trial_config `
             gui.py
 
       - name: Upload EXE as artifact

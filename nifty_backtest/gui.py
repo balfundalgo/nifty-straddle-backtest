@@ -16,6 +16,11 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
+# ── Trial lock — checked before anything else ─────────────────────────────────
+from trial_lock import check_trial
+check_trial()
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
