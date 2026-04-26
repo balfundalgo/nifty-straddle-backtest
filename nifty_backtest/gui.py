@@ -305,6 +305,9 @@ class App(ctk.CTk):
         row("SL Buffer (₹)",            "sl_buffer",         "5.0")
 
         # ATR
+        row("Slippage % on Exits",      "slippage_pct",   "0.001",
+            tooltip="e.g. 0.001=0.1%, 0.002=0.2%")
+
         section("📈  ATR Trailing (Surviving Leg)")
         row("ATR Timeframe",            "atr_timeframe",     "5min",
             widget="option", values=["1min", "5min", "15min"])
@@ -619,6 +622,7 @@ class App(ctk.CTk):
             "hedge_pct":              float(g("hedge_pct")),
             "vix_intraday_threshold": float(g("vix_intraday_threshold")),
             "sl_buffer":              float(g("sl_buffer")),
+            "slippage_pct":           float(g("slippage_pct")),
             "atr_timeframe":          g("atr_timeframe"),
             "atr_period":             int(g("atr_period")),
             "atr_multiplier":         float(g("atr_multiplier")),

@@ -43,6 +43,11 @@ def compute_metrics(results: List[DayResult], params_dict: dict = None) -> Dict[
     # ── Sharpe (annualized, 252 trading days) ──────────────────────────────
     sharpe = (avg_daily / std_daily * np.sqrt(252)) if std_daily > 0 else 0.0
 
+    # ── Standard Deviation of daily P&L ─────────────────────────────────
+    # std_daily already computed above (daily P&L std dev)
+    # Also compute annualized std dev
+    std_annual = float(std_daily * np.sqrt(252))
+
     # ── Max Drawdown ───────────────────────────────────────────────────────
     cumulative  = np.cumsum(pnls)
     running_max = np.maximum.accumulate(cumulative)
@@ -76,6 +81,7 @@ def compute_metrics(results: List[DayResult], params_dict: dict = None) -> Dict[
         # Per-trade
         "avg_daily_pnl":     round(avg_daily, 2),
         "std_daily_pnl":     round(std_daily, 2),
+        "std_annual_pnl":    round(std_annual, 2),
         "avg_win":           round(avg_win,   2),
         "avg_loss":          round(avg_loss,  2),
         "max_win":           round(max_win,   2),

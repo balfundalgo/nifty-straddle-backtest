@@ -202,7 +202,7 @@ class DaySimulator:
 
         # Both miss SL → EOD exit
         if ce_hit_idx is None and pe_hit_idx is None:
-            result = _eod_exit_all(result, ce, pe, ceh, peh, eod_ts)
+            result = _eod_exit_all(result, ce, pe, ceh, peh, eod_ts, slippage_pct=self.p.slippage_pct)
             return result
 
         # ── Phase 2: First leg exits at fixed SL ──────────────────────────────
@@ -218,8 +218,9 @@ class DaySimulator:
                                   self.p.hedge_trail_step, "ce")
 
             # PE surviving leg → ATR trailing
-            pe_after = pe[pe.index >= idx_ts]
-            result = self._atr_trail_leg(result, pe_after, pe_sl, eod_ts, "pe")
+            # Pass FULL pe series for ATR history, but only check breaches after idx_ts
+            result = self._atr_trail_leg(result, pe, pe_sl, eod_ts, "pe",
+                                          trail_start_ts=idx_ts)
 
             # PE hedge → close at EOD price regardless of how PE sell exited
             if not peh.empty and result.pe_hedge_exit is None:
@@ -240,8 +241,9 @@ class DaySimulator:
                                   self.p.hedge_trail_step, "pe")
 
             # CE surviving leg → ATR trailing
-            ce_after = ce[ce.index >= idx_ts]
-            result = self._atr_trail_leg(result, ce_after, ce_sl, eod_ts, "ce")
+            # Pass FULL ce series for ATR history, but only check breaches after idx_ts
+            result = self._atr_trail_leg(result, ce, ce_sl, eod_ts, "ce",
+                                          trail_start_ts=idx_ts)
 
             # CE hedge → close at EOD price regardless of how CE sell exited
             if not ceh.empty and result.ce_hedge_exit is None:
@@ -252,68 +254,91 @@ class DaySimulator:
 
         return result
 
-    def _atr_trail_leg(self, result, series, initial_sl, eod_ts, leg: str) -> DayResult:
+    def _atr_trail_leg(self, result, series, initial_sl, eod_ts, leg: str,
+                       trail_start_ts=None) -> DayResult:
         """
         ATR trailing for the surviving sell leg after the other leg hit SL.
-        Recalculates ATR once per ATR-candle, then vectorized SL check within
-        that candle window. Much faster than checking every second.
-        """
-        import numpy as np
 
+        Key design:
+        - Uses FULL day series for ATR calculation (proper 5-min candle history)
+        - Only checks for SL breaches AFTER trail_start_ts (when other leg hit SL)
+        - ATR is on the configured timeframe (e.g. 5min), NOT on 1-second data
+        - SL breach detection uses 1-second ticks within each candle window
+        """
         if series.empty:
-            # No data after SL hit → EOD exit at last known price
             _set_eod(result, series, leg)
             return result
 
-        # Resample to ATR timeframe for candle-level iteration
+        # Resample FULL series to ATR timeframe for proper historical ATR
         atr_candles = resample_to_timeframe(series, self.p.atr_timeframe)
-        current_sl  = initial_sl
+        if atr_candles.empty:
+            _set_eod(result, series, leg)
+            return result
+
+        current_sl = initial_sl
 
         for i in range(len(atr_candles)):
-            candle_end = atr_candles.index[i]
+            candle_end   = atr_candles.index[i]
+            candle_start = atr_candles.index[i - 1] if i > 0 else series.index[0]
 
-            # Update ATR SL using all candles up to now
-            if i >= self.p.atr_period + 1:
+            # Update ATR SL using all candles up to current (needs atr_period candles)
+            if i >= self.p.atr_period:
                 new_sl = compute_atr_trail_sl(
-                    atr_candles.iloc[:i+1],
+                    atr_candles.iloc[:i + 1],
                     self.p.atr_period,
                     self.p.atr_multiplier,
                     is_short=True
                 )
-                # Only tighten (lower SL = tighter for short)
+                # Only tighten trailing SL (lower = tighter for short)
                 if new_sl and new_sl < current_sl:
                     current_sl = new_sl
 
-            # Check this ATR candle's 1-sec ticks for SL breach (vectorized)
-            if i < len(atr_candles) - 1:
-                candle_start = atr_candles.index[i - 1] if i > 0 else series.index[0]
-            else:
-                candle_start = atr_candles.index[i - 1] if i > 0 else series.index[0]
+            # Only check for breaches AFTER trail_start_ts
+            if trail_start_ts is not None and candle_end <= trail_start_ts:
+                continue
 
+            # Get 1-sec ticks within this candle (after trail start if needed)
+            tick_start = max(candle_start,
+                             trail_start_ts) if trail_start_ts else candle_start
             tick_window = series[
-                (series.index > candle_start) & (series.index <= candle_end)
-            ] if i > 0 else series[series.index <= candle_end]
+                (series.index > tick_start) & (series.index <= candle_end)
+            ]
 
             if tick_window.empty:
                 continue
 
+            # Vectorized SL breach check on 1-sec ticks
             breach_idx = _first_breach_idx(tick_window, current_sl)
             if breach_idx is not None:
                 breach_ts = tick_window.index[breach_idx]
                 _set_sl_exit(result, current_sl, breach_ts, "ATR_TRAIL_SL", leg)
                 return result
 
-            # Check EOD
+            # EOD check
             if candle_end >= eod_ts:
                 _set_eod(result, series, leg)
                 return result
 
-        # Reached end without SL → EOD
+        # Survived all candles → EOD exit
         _set_eod(result, series, leg)
         return result
 
 
 # ── Vectorized helpers ────────────────────────────────────────────────────────
+
+def _apply_slippage(price: float, slippage_pct: float, is_short: bool = True) -> float:
+    """
+    Apply slippage to an exit price.
+    For SHORT positions (selling options): slippage increases exit price (costs more to buy back)
+    slippage_pct = 0.001 means 0.1%
+    """
+    if slippage_pct <= 0:
+        return price
+    if is_short:
+        return round(price * (1 + slippage_pct), 2)
+    else:
+        return round(price * (1 - slippage_pct), 2)
+
 
 def _first_breach_idx(series: pd.DataFrame, sl: float) -> Optional[int]:
     """
@@ -370,20 +395,20 @@ def _trail_hedge(result, hedge_series: pd.DataFrame, entry_price: float,
     return result
 
 
-def _eod_exit_all(result, ce, pe, ceh, peh, eod_ts) -> DayResult:
-    """Square off all legs at EOD."""
-    for series, attr_exit, attr_reason, attr_time in [
-        (ce,  "ce_exit",       "ce_exit_reason",       "ce_exit_time"),
-        (pe,  "pe_exit",       "pe_exit_reason",       "pe_exit_time"),
-        (ceh, "ce_hedge_exit", "ce_hedge_exit_reason", None),
-        (peh, "pe_hedge_exit", "pe_hedge_exit_reason", None),
+def _eod_exit_all(result, ce, pe, ceh, peh, eod_ts, slippage_pct=0.0) -> DayResult:
+    """Square off all legs at EOD with slippage applied."""
+    for series, attr_exit, attr_reason, attr_time, is_short in [
+        (ce,  "ce_exit",       "ce_exit_reason",       "ce_exit_time", True),
+        (pe,  "pe_exit",       "pe_exit_reason",       "pe_exit_time", True),
+        (ceh, "ce_hedge_exit", "ce_hedge_exit_reason", None,           False),
+        (peh, "pe_hedge_exit", "pe_hedge_exit_reason", None,           False),
     ]:
         if series.empty:
             continue
         last = series[series.index <= eod_ts]
         if last.empty:
             last = series
-        price = float(last["close"].iloc[-1])
+        price = _apply_slippage(float(last["close"].iloc[-1]), slippage_pct, is_short=is_short)
         setattr(result, attr_exit,  price)
         setattr(result, attr_reason, "EOD")
         if attr_time:
@@ -391,19 +416,20 @@ def _eod_exit_all(result, ce, pe, ceh, peh, eod_ts) -> DayResult:
     return result
 
 
-def _set_sl_exit(result, sl_price, ts, reason, leg):
-    time_str = ts.strftime("%H:%M:%S")
+def _set_sl_exit(result, sl_price, ts, reason, leg, slippage_pct=0.0):
+    time_str   = ts.strftime("%H:%M:%S")
+    exit_price = _apply_slippage(sl_price, slippage_pct, is_short=True)
     if leg == "ce":
-        result.ce_exit = sl_price; result.ce_exit_reason = reason
+        result.ce_exit = exit_price; result.ce_exit_reason = reason
         result.ce_exit_time = time_str
     else:
-        result.pe_exit = sl_price; result.pe_exit_reason = reason
+        result.pe_exit = exit_price; result.pe_exit_reason = reason
         result.pe_exit_time = time_str
 
 
-def _set_eod(result, series, leg):
+def _set_eod(result, series, leg, slippage_pct=0.0):
     if series.empty: return
-    price    = float(series["close"].iloc[-1])
+    price    = _apply_slippage(float(series["close"].iloc[-1]), slippage_pct, is_short=True)
     time_str = series.index[-1].strftime("%H:%M:%S")
     if leg == "ce":
         result.ce_exit = price; result.ce_exit_reason = "EOD"

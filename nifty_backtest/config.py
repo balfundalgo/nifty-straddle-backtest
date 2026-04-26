@@ -53,6 +53,9 @@ class StrategyParams:
     # ── Lot Size ───────────────────────────────
     lot_size: int = 75                # NIFTY lot size (verify current NSE lot size)
 
+
+    # ── Slippage ───────────────────────────────────────────────────────
+    slippage_pct: float = 0.001   # 0.1% slippage on exits. e.g. SL=145 → actual exit=145.145
     # ── Expiry ─────────────────────────────────
     expiry_weekday: int = 3           # 0=Mon … 3=Thu (NIFTY weekly expiry = Thursday)
 
@@ -61,7 +64,7 @@ class StrategyParams:
             f"ATM[{self.atm_scan_start}-{self.atm_scan_end} maxdiff={self.max_premium_diff}] "
             f"Hedge={self.hedge_pct*100:.0f}% VIXthr={self.vix_intraday_threshold}% "
             f"ATR[{self.atr_timeframe},p{self.atr_period},x{self.atr_multiplier}] "
-            f"Step={self.hedge_trail_step} EOD={self.eod_exit_time}"
+            f"Step={self.hedge_trail_step} EOD={self.eod_exit_time} Slip={self.slippage_pct*100:.2f}%"
         )
 
     def to_dict(self):
@@ -77,6 +80,7 @@ class StrategyParams:
             "hedge_trail_step": self.hedge_trail_step,
             "eod_exit_time": self.eod_exit_time,
             "lot_size": self.lot_size,
+            "slippage_pct": self.slippage_pct,
         }
 
 
@@ -108,6 +112,8 @@ class GridConfig:
     atr_multipliers:  List[float] = field(default_factory=lambda: [1.0, 1.5, 2.0])
 
     # Hedge step trail
+    slippage_pcts: List[float] = field(default_factory=lambda: [0.0, 0.001, 0.002])  # 0%, 0.1%, 0.2%
+
     hedge_trail_steps: List[float] = field(default_factory=lambda: [2.0, 3.0, 4.0])
 
     # EOD exit
@@ -119,7 +125,7 @@ class GridConfig:
             self.atm_scan_starts, self.atm_scan_ends, self.max_premium_diffs,
             self.hedge_pcts, self.vix_intraday_thresholds,
             self.atr_timeframes, self.atr_periods, self.atr_multipliers,
-            self.hedge_trail_steps, self.eod_exit_times,
+            self.slippage_pcts, self.hedge_trail_steps, self.eod_exit_times,
         ]:
             count *= len(lst)
         return count

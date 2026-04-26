@@ -45,6 +45,7 @@ def run_backtest(cfg: dict,
         hedge_trail_step       = cfg["hedge_trail_step"],
         eod_exit_time          = cfg["eod_exit_time"],
         lot_size               = cfg["lot_size"],
+        slippage_pct           = float(cfg.get("slippage_pct", 0.001)),
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

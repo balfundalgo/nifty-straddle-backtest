@@ -310,6 +310,8 @@ def _write_deep_analysis(ws, wb, results, hdr_fmt, text_fmt,
         ("Fallback ATM days",    fallback_days, int_fmt),
         ("Total P&L",            pnl_total,     green_fmt if pnl_total >= 0 else red_fmt),
         ("Win Rate",             win_rate / 100, pct_fmt2),
+        ("Std Dev Daily P&L",    float(ok["total_pnl"].std()),   money_fmt),
+        ("Std Dev Annual P&L",   float(ok["total_pnl"].std() * (252**0.5)), money_fmt),
     ]:
         write_row(lbl, val, fmts=[fmt])
     row += 1

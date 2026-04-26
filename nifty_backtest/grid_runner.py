@@ -30,6 +30,7 @@ def generate_param_combinations(grid: GridConfig) -> List[StrategyParams]:
         ("atr_timeframe",          grid.atr_timeframes),
         ("atr_period",             grid.atr_periods),
         ("atr_multiplier",         grid.atr_multipliers),
+        ("slippage_pct",           grid.slippage_pcts),
         ("hedge_trail_step",       grid.hedge_trail_steps),
         ("eod_exit_times",         grid.eod_exit_times),
     ]
