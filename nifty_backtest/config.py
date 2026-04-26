@@ -74,6 +74,14 @@ class StrategyParams:
             "max_premium_diff": self.max_premium_diff,
             "hedge_pct": self.hedge_pct,
             "vix_intraday_threshold": self.vix_intraday_threshold,
+            "vix_low":                  self.vix_low,
+            "vix_mid_low":              self.vix_mid_low,
+            "vix_mid_high":             self.vix_mid_high,
+            "sl_pct_vix_lt12":          self.sl_pct_vix_lt12,
+            "sl_pct_vix_12_16_calm":    self.sl_pct_vix_12_16_calm,
+            "sl_pct_vix_12_16_volatile":self.sl_pct_vix_12_16_volatile,
+            "sl_pct_vix_16_20":         self.sl_pct_vix_16_20,
+            "sl_pct_vix_gt20":          self.sl_pct_vix_gt20,
             "atr_timeframe": self.atr_timeframe,
             "atr_period": self.atr_period,
             "atr_multiplier": self.atr_multiplier,
@@ -106,6 +114,18 @@ class GridConfig:
     # VIX intraday trigger
     vix_intraday_thresholds: List[float] = field(default_factory=lambda: [2.0, 3.0, 4.0])
 
+    # VIX regime boundaries (for grid search)
+    vix_lows:      List[float] = field(default_factory=lambda: [12.0])
+    vix_mid_lows:  List[float] = field(default_factory=lambda: [16.0])
+    vix_mid_highs: List[float] = field(default_factory=lambda: [20.0])
+
+    # SL % per VIX regime (for grid search)
+    sl_pct_lt12_list:        List[float] = field(default_factory=lambda: [0.40])
+    sl_pct_12_16_calm_list:  List[float] = field(default_factory=lambda: [0.40])
+    sl_pct_12_16_vol_list:   List[float] = field(default_factory=lambda: [0.25])
+    sl_pct_16_20_list:       List[float] = field(default_factory=lambda: [0.25])
+    sl_pct_gt20_list:        List[float] = field(default_factory=lambda: [0.15])
+
     # ATR trailing
     atr_timeframes:   List[str]   = field(default_factory=lambda: ["1min", "3min", "5min", "15min"])  # supported: 1min,3min,5min,15min,30min
     atr_periods:      List[int]   = field(default_factory=lambda: [7, 14, 21])
@@ -126,6 +146,10 @@ class GridConfig:
             self.hedge_pcts, self.vix_intraday_thresholds,
             self.atr_timeframes, self.atr_periods, self.atr_multipliers,
             self.slippage_pcts, self.hedge_trail_steps, self.eod_exit_times,
+            self.vix_lows, self.vix_mid_lows, self.vix_mid_highs,
+            self.sl_pct_lt12_list, self.sl_pct_12_16_calm_list,
+            self.sl_pct_12_16_vol_list, self.sl_pct_16_20_list,
+            self.sl_pct_gt20_list,
         ]:
             count *= len(lst)
         return count

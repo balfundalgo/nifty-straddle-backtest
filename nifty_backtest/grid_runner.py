@@ -30,9 +30,17 @@ def generate_param_combinations(grid: GridConfig) -> List[StrategyParams]:
         ("atr_timeframe",          grid.atr_timeframes),
         ("atr_period",             grid.atr_periods),
         ("atr_multiplier",         grid.atr_multipliers),
-        ("slippage_pct",           grid.slippage_pcts),
-        ("hedge_trail_step",       grid.hedge_trail_steps),
-        ("eod_exit_times",         grid.eod_exit_times),
+        ("slippage_pct",              grid.slippage_pcts),
+        ("hedge_trail_step",          grid.hedge_trail_steps),
+        ("eod_exit_time",             grid.eod_exit_times),
+        ("vix_low",                   grid.vix_lows),
+        ("vix_mid_low",               grid.vix_mid_lows),
+        ("vix_mid_high",              grid.vix_mid_highs),
+        ("sl_pct_vix_lt12",           grid.sl_pct_lt12_list),
+        ("sl_pct_vix_12_16_calm",     grid.sl_pct_12_16_calm_list),
+        ("sl_pct_vix_12_16_volatile", grid.sl_pct_12_16_vol_list),
+        ("sl_pct_vix_16_20",          grid.sl_pct_16_20_list),
+        ("sl_pct_vix_gt20",           grid.sl_pct_gt20_list),  # singular key matches StrategyParams
     ]
     keys   = [k for k, _ in keys_and_values]
     values = [v for _, v in keys_and_values]

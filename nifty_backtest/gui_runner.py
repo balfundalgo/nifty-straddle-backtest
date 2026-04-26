@@ -45,7 +45,15 @@ def run_backtest(cfg: dict,
         hedge_trail_step       = cfg["hedge_trail_step"],
         eod_exit_time          = cfg["eod_exit_time"],
         lot_size               = cfg["lot_size"],
-        slippage_pct           = float(cfg.get("slippage_pct", 0.001)),
+        slippage_pct                = float(cfg.get("slippage_pct", 0.001)),
+        vix_low                     = float(cfg.get("vix_low", 12.0)),
+        vix_mid_low                 = float(cfg.get("vix_mid_low", 16.0)),
+        vix_mid_high                = float(cfg.get("vix_mid_high", 20.0)),
+        sl_pct_vix_lt12             = float(cfg.get("sl_pct_vix_lt12", 0.40)),
+        sl_pct_vix_12_16_calm       = float(cfg.get("sl_pct_vix_12_16_calm", 0.40)),
+        sl_pct_vix_12_16_volatile   = float(cfg.get("sl_pct_vix_12_16_volatile", 0.25)),
+        sl_pct_vix_16_20            = float(cfg.get("sl_pct_vix_16_20", 0.25)),
+        sl_pct_vix_gt20             = float(cfg.get("sl_pct_vix_gt20", 0.15)),
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -128,6 +136,14 @@ def run_backtest(cfg: dict,
             grid.atr_periods              = parse_int("g_atr_per")
             grid.atr_multipliers          = parse_flt("g_atr_mult")
             grid.eod_exit_times           = parse_str("g_eod")
+            grid.vix_lows                 = parse_flt("g_vix_low")
+            grid.vix_mid_lows             = parse_flt("g_vix_mid_low")
+            grid.vix_mid_highs            = parse_flt("g_vix_mid_high")
+            grid.sl_pct_lt12_list         = parse_flt("g_sl_lt12")
+            grid.sl_pct_12_16_calm_list   = parse_flt("g_sl_calm")
+            grid.sl_pct_12_16_vol_list    = parse_flt("g_sl_vol")
+            grid.sl_pct_16_20_list        = parse_flt("g_sl_1620")
+            grid.sl_pct_gt20_list         = parse_flt("g_sl_gt20")
 
         combos = generate_param_combinations(grid)
         total  = len(combos)

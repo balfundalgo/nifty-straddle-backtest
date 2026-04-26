@@ -304,14 +304,20 @@ class App(ctk.CTk):
         row("Hedge % of Premium",       "hedge_pct",         "0.05")
         row("Hedge Trail Step (₹)",     "hedge_trail_step",  "3.0")
 
+
         # VIX & SL
         section("📊  VIX & Stop Loss")
-        row("VIX Intraday Threshold %", "vix_intraday_threshold", "3.0")
-        row("SL Buffer (₹)",            "sl_buffer",         "5.0")
-
-        # ATR
-        row("Slippage % on Exits",      "slippage_pct",   "0.001",
-            tooltip="e.g. 0.001=0.1%, 0.002=0.2%")
+        row("VIX Intraday Threshold %",     "vix_intraday_threshold",   "3.0")
+        row("VIX Low Boundary",             "vix_low",                  "12.0")
+        row("VIX Mid-Low Boundary",         "vix_mid_low",              "16.0")
+        row("VIX Mid-High Boundary",        "vix_mid_high",             "20.0")
+        row("SL % when VIX < 12",           "sl_pct_vix_lt12",          "0.40")
+        row("SL % VIX 12-16 (Calm)",        "sl_pct_vix_12_16_calm",    "0.40")
+        row("SL % VIX 12-16 (Volatile)",    "sl_pct_vix_12_16_volatile","0.25")
+        row("SL % when VIX 16-20",          "sl_pct_vix_16_20",         "0.25")
+        row("SL % when VIX > 20",           "sl_pct_vix_gt20",          "0.15")
+        row("SL Buffer (₹)",                "sl_buffer",                "5.0")
+        row("Slippage % on Exits",          "slippage_pct",             "0.001")
 
         section("📈  ATR Trailing (Surviving Leg)")
         row("ATR Timeframe",            "atr_timeframe",     "5min",
@@ -380,8 +386,16 @@ class App(ctk.CTk):
         grow("Hedge %s",            "g_hedge_pct",   "0.03,0.05,0.07",      "%,...")
         grow("Trail Steps (₹)",     "g_trail_step",  "2.0,3.0,4.0",         "₹,...")
 
-        gsec("VIX")
-        grow("VIX Thresholds %",    "g_vix_thr",     "2.0,3.0,4.0",         "%,...")
+        gsec("VIX & Stop Loss")
+        grow("VIX Intraday Thr%",    "g_vix_thr",      "2.0,3.0,4.0",           "%,...")
+        grow("VIX Low Boundary",     "g_vix_low",      "12.0",                  "e.g. 12")
+        grow("VIX Mid-Low",          "g_vix_mid_low",  "16.0",                  "e.g. 16")
+        grow("VIX Mid-High",         "g_vix_mid_high", "20.0",                  "e.g. 20")
+        grow("SL% VIX<12",           "g_sl_lt12",      "0.35,0.40,0.45",        "...")
+        grow("SL% 12-16 Calm",       "g_sl_calm",      "0.35,0.40",             "...")
+        grow("SL% 12-16 Volatile",   "g_sl_vol",       "0.20,0.25,0.30",        "...")
+        grow("SL% VIX 16-20",        "g_sl_1620",      "0.20,0.25,0.30",        "...")
+        grow("SL% VIX>20",           "g_sl_gt20",      "0.10,0.15,0.20",        "...")
 
         gsec("ATR Trailing")
         grow("ATR Timeframes",      "g_atr_tf",      "1min,5min,15min",     "tf,...")
@@ -428,6 +442,9 @@ class App(ctk.CTk):
             counts = []
             for key in ["g_atm_start", "g_atm_end", "g_prem_diff",
                         "g_hedge_pct", "g_trail_step", "g_vix_thr",
+                        "g_vix_low", "g_vix_mid_low", "g_vix_mid_high",
+                        "g_sl_lt12", "g_sl_calm", "g_sl_vol",
+                        "g_sl_1620", "g_sl_gt20",
                         "g_atr_tf", "g_atr_per", "g_atr_mult", "g_eod"]:
                 v = self._vars.get(key)
                 if v:
@@ -625,7 +642,15 @@ class App(ctk.CTk):
             "atm_scan_end":           g("atm_scan_end"),
             "max_premium_diff":       float(g("max_premium_diff")),
             "hedge_pct":              float(g("hedge_pct")),
-            "vix_intraday_threshold": float(g("vix_intraday_threshold")),
+            "vix_intraday_threshold":   float(g("vix_intraday_threshold")),
+            "vix_low":                  float(g("vix_low")),
+            "vix_mid_low":              float(g("vix_mid_low")),
+            "vix_mid_high":             float(g("vix_mid_high")),
+            "sl_pct_vix_lt12":          float(g("sl_pct_vix_lt12")),
+            "sl_pct_vix_12_16_calm":    float(g("sl_pct_vix_12_16_calm")),
+            "sl_pct_vix_12_16_volatile":float(g("sl_pct_vix_12_16_volatile")),
+            "sl_pct_vix_16_20":         float(g("sl_pct_vix_16_20")),
+            "sl_pct_vix_gt20":          float(g("sl_pct_vix_gt20")),
             "sl_buffer":              float(g("sl_buffer")),
             "slippage_pct":           float(g("slippage_pct")),
             "atr_timeframe":          g("atr_timeframe"),
@@ -637,8 +662,12 @@ class App(ctk.CTk):
             "g_atm_start":   g("g_atm_start"),   "g_atm_end":  g("g_atm_end"),
             "g_prem_diff":   g("g_prem_diff"),   "g_hedge_pct":g("g_hedge_pct"),
             "g_trail_step":  g("g_trail_step"),  "g_vix_thr":  g("g_vix_thr"),
-            "g_atr_tf":      g("g_atr_tf"),      "g_atr_per":  g("g_atr_per"),
-            "g_atr_mult":    g("g_atr_mult"),    "g_eod":      g("g_eod"),
+            "g_atr_tf":       g("g_atr_tf"),      "g_atr_per":     g("g_atr_per"),
+            "g_atr_mult":     g("g_atr_mult"),    "g_eod":         g("g_eod"),
+            "g_vix_low":      g("g_vix_low"),     "g_vix_mid_low": g("g_vix_mid_low"),
+            "g_vix_mid_high": g("g_vix_mid_high"),"g_sl_lt12":     g("g_sl_lt12"),
+            "g_sl_calm":      g("g_sl_calm"),     "g_sl_vol":      g("g_sl_vol"),
+            "g_sl_1620":      g("g_sl_1620"),     "g_sl_gt20":     g("g_sl_gt20"),
         }
 
     # ─── Worker ──────────────────────────────────────────────────────────────
