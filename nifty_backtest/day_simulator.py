@@ -109,8 +109,12 @@ class DaySimulator:
             result.notes    = "ATM_FALLBACK: spot-based strike used (premium diff not met)"
 
         result.atm_strike = atm_strike
-        result.ce_entry   = ce_prem
-        result.pe_entry   = pe_prem
+        # Apply entry slippage:
+        # SELL legs (CE/PE): we get worse fill = lower price (sell at lower price)
+        # BUY legs (hedges): we pay more = higher price (buy at higher price)
+        slip = self.p.slippage_pct
+        result.ce_entry   = round(ce_prem * (1 - slip), 2) if slip > 0 else ce_prem
+        result.pe_entry   = round(pe_prem * (1 - slip), 2) if slip > 0 else pe_prem
         result.entry_time = entry_time
 
         # Phase 1b: Hedge selection
@@ -122,9 +126,10 @@ class DaySimulator:
         )
 
         result.ce_hedge_strike = ce_hedge_strike
-        result.ce_hedge_entry  = ce_hedge_entry
+        # Hedge buys: we pay more (higher price = worse fill for buyer)
+        result.ce_hedge_entry  = round(ce_hedge_entry * (1 + slip), 2) if (ce_hedge_entry and slip > 0) else ce_hedge_entry
         result.pe_hedge_strike = pe_hedge_strike
-        result.pe_hedge_entry  = pe_hedge_entry
+        result.pe_hedge_entry  = round(pe_hedge_entry * (1 + slip), 2) if (pe_hedge_entry and slip > 0) else pe_hedge_entry
 
         # Phase 1c: VIX-based SL
         vix_at_entry = _get_value_at_time(day.vix_1min, entry_time)

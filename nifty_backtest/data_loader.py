@@ -52,7 +52,7 @@ class PathConfig:
 
     @property
     def cache_dir(self) -> Path:
-        """Parquet cache folder — auto-created on first run."""
+        """Pickle cache folder — auto-created on first run."""
         p = Path(self.base_path) / "_balfund_cache"
         p.mkdir(exist_ok=True)
         return p
@@ -108,8 +108,8 @@ class DayData:
 class DataLoader:
     """
     Loads local Breeze CSV data at 1-second resolution.
-    Uses parquet disk-cache so raw CSVs are only read ONCE — subsequent
-    loads read parquet which is 15-30x faster.
+    Uses pickle disk-cache so raw CSVs are only read ONCE — subsequent
+    loads read pickle which is 15-30x faster.
     Also caches in RAM so grid search reuses loaded data without re-reading.
     """
 
@@ -261,20 +261,20 @@ class DataLoader:
     # ─── VIX ─────────────────────────────────────────────────────────────────
 
     def _load_vix_1min(self, date_str: str) -> pd.DataFrame:
-        """Load VIX at 1-min resolution with parquet cache."""
-        cache_path = self.paths.cache_dir / f"vix_{date_str}.parquet"
+        """Load VIX at 1-min resolution with pickle cache."""
+        cache_path = self.paths.cache_dir / f"vix_{date_str}.pkl"
         csv_path   = self.paths.vix_dir / f"{date_str}.csv"
         if not csv_path.exists():
             logger.warning(f"VIX file not found: {csv_path}")
             return pd.DataFrame()
         if cache_path.exists() and cache_path.stat().st_mtime >= csv_path.stat().st_mtime:
-            return pd.read_parquet(cache_path)
+            return pd.read_pickle(cache_path)
         raw = _read_csv(csv_path)
         if raw.empty:
             return pd.DataFrame()
         df = _resample_1min(raw, date_str)
         if not df.empty:
-            df.to_parquet(cache_path)
+            df.to_pickle(cache_path)
         return df
 
     def _get_vix_prev_close(self, date_str: str) -> Optional[float]:
@@ -313,20 +313,20 @@ class DataLoader:
 
     def _load_spot_1min(self, date_str: str) -> pd.DataFrame:
         """Load spot at 1-min resolution (used only for ATM strike lookup)."""
-        cache_path = self.paths.cache_dir / f"spot_{date_str}.parquet"
+        cache_path = self.paths.cache_dir / f"spot_{date_str}.pkl"
         csv_path   = self.paths.spot_dir / f"{date_str}.csv"
         if not csv_path.exists():
             logger.warning(f"Spot file not found: {csv_path}")
             return pd.DataFrame()
         # Use parquet cache if fresh
         if cache_path.exists() and cache_path.stat().st_mtime >= csv_path.stat().st_mtime:
-            return pd.read_parquet(cache_path)
+            return pd.read_pickle(cache_path)
         raw = _read_csv(csv_path)
         if raw.empty:
             return pd.DataFrame()
         df = _resample_1min(raw, date_str)
         if not df.empty:
-            df.to_parquet(cache_path)
+            df.to_pickle(cache_path)
         return df
 
     # ─── Options ─────────────────────────────────────────────────────────────
@@ -379,11 +379,11 @@ class DataLoader:
                 continue
 
             # Use per-file parquet cache (1-second resolution, no resampling)
-            cache_path = self.paths.cache_dir / f"opt_{Path(fpath).stem}.parquet"
+            cache_path = self.paths.cache_dir / f"opt_{Path(fpath).stem}.pkl"
             fpath_obj  = Path(fpath)
 
             if cache_path.exists() and cache_path.stat().st_mtime >= fpath_obj.stat().st_mtime:
-                df_1sec = pd.read_parquet(cache_path)
+                df_1sec = pd.read_pickle(cache_path)
             else:
                 raw = _read_csv(fpath)
                 if raw.empty:
@@ -391,7 +391,7 @@ class DataLoader:
                 df_1sec = _clean_1sec(raw, date_str)
                 if df_1sec.empty:
                     continue
-                df_1sec.to_parquet(cache_path)
+                df_1sec.to_pickle(cache_path)
 
             if df_1sec.empty:
                 continue
