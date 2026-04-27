@@ -178,7 +178,10 @@ class App(ctk.CTk):
             e=ctk.CTkEntry(r,font=FS,height=28,fg_color=CARD2,border_color=BORDER,text_color=TEXT)
             e.insert(0,default); e.pack(side="left",fill="x",expand=True)
             if hint: ctk.CTkLabel(r,text=hint,font=("Segoe UI",9),text_color=MUTED).pack(side="left",padx=(4,0))
-            e.bind("<KeyRelease>",lambda _:self._upd_combos()); self._vars[key]=e
+            e.bind("<KeyRelease>", lambda _: self._upd_combos())
+            e.bind("<<Paste>>",    lambda _: self.after(10, self._upd_combos))
+            e.bind("<FocusOut>",   lambda _: self._upd_combos())
+            self._vars[key]=e
         gsec("\U0001f4c1  Data & Dates")
         grow("Data Path","g_data_path",r"C:\Users\Admin\Downloads\BreezeDownloader-v1.5.0\breeze_data")
         grow("From Date","g_from","2026-01-02"); grow("To Date","g_to","2026-04-21")
