@@ -309,6 +309,15 @@ def get_nearest_expiry(trading_date: str, expiry_weekday: int = None) -> str:
 # (Uses pre-loaded DayData instead of raw DataFrame)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _hhmm_to_ts(date_str: str, hhmm: str) -> pd.Timestamp:
+    """Convert 'HH:MM' string to Timestamp for fast index comparison."""
+    return pd.Timestamp(f"{date_str} {hhmm}:59")  # include all seconds in that minute
+
+def _hhmm_to_ts_start(date_str: str, hhmm: str) -> pd.Timestamp:
+    """Start of minute."""
+    return pd.Timestamp(f"{date_str} {hhmm}:00")
+
+
 def find_atm_strike_from_daydata(
     day,
     scan_start: str,
@@ -349,7 +358,7 @@ def find_atm_strike_from_daydata(
     else:
         candidates = common
 
-    scan_end_hhmm = scan_end  # e.g. "09:21"
+    scan_end_hhmm = scan_end
 
     for strike in candidates:
         ce_df = day.options_1min.get((strike, "CE"), pd.DataFrame())
@@ -358,7 +367,6 @@ def find_atm_strike_from_daydata(
         if ce_df.empty or pe_df.empty:
             continue
 
-        # Get last price at or before scan_end for each leg independently
         ce_p, ce_ts = _last_price_at(ce_df, scan_start, scan_end_hhmm)
         pe_p, pe_ts = _last_price_at(pe_df, scan_start, scan_end_hhmm)
 
@@ -395,22 +403,22 @@ def _last_price_at(
 ) -> Tuple[Optional[float], Optional[object]]:
     """
     Get last close price at or before scan_end.
-    First tries within [scan_start, scan_end], then falls back to
-    anything before scan_end to handle sparse 1-second data.
-    Returns (price, timestamp) or (None, None).
+    Uses direct Timestamp comparison (no strftime — much faster on 1-sec data).
     """
     if df.empty:
         return None, None
 
-    times = df.index.strftime("%H:%M")
+    date_str  = df.index[0].strftime("%Y-%m-%d")
+    ts_start  = _hhmm_to_ts_start(date_str, scan_start)
+    ts_end    = _hhmm_to_ts(date_str, scan_end)
 
     # Try within scan window first
-    win = df[(times >= scan_start) & (times <= scan_end)]
+    win = df[(df.index >= ts_start) & (df.index <= ts_end)]
     if not win.empty:
         return float(win["close"].iloc[-1]), win.index[-1]
 
     # Fallback: last tick before scan_end
-    before = df[times <= scan_end]
+    before = df[df.index <= ts_end]
     if not before.empty:
         return float(before["close"].iloc[-1]), before.index[-1]
 
@@ -452,8 +460,12 @@ def _atm_fallback(
     if ce_df.empty or pe_df.empty:
         return None, None, None, None
 
-    ce_win = ce_df[ce_df.index.strftime("%H:%M") <= scan_end]
-    pe_win = pe_df[pe_df.index.strftime("%H:%M") <= scan_end]
+    if ce_df.empty or pe_df.empty:
+        return None, None, None, None
+    date_str = ce_df.index[0].strftime("%Y-%m-%d")
+    ts_end   = _hhmm_to_ts(date_str, scan_end)
+    ce_win = ce_df[ce_df.index <= ts_end]
+    pe_win = pe_df[pe_df.index <= ts_end]
 
     if ce_win.empty or pe_win.empty:
         return None, None, None, None
@@ -469,13 +481,18 @@ def _atm_fallback(
 
 
 def _get_spot_at_time(day, scan_start: str, scan_end: str) -> Optional[float]:
-    """Get NIFTY spot price during the scan window from spot_1min data."""
+    """Get NIFTY spot price during the scan window. Uses Timestamp comparison (fast)."""
     if day.spot_1min is None or day.spot_1min.empty:
         return None
-    times = day.spot_1min.index.strftime("%H:%M")
-    win   = day.spot_1min[(times >= scan_start) & (times <= scan_end)]
+    idx      = day.spot_1min.index
+    if len(idx) == 0:
+        return None
+    date_str = idx[0].strftime("%Y-%m-%d")
+    ts_start = _hhmm_to_ts_start(date_str, scan_start)
+    ts_end   = _hhmm_to_ts(date_str, scan_end)
+    win = day.spot_1min[(idx >= ts_start) & (idx <= ts_end)]
     if win.empty:
-        win = day.spot_1min[times <= scan_end]
+        win = day.spot_1min[idx <= ts_end]
     if win.empty:
         return None
     return float(win["close"].iloc[-1])
@@ -508,17 +525,20 @@ def find_hedge_strike_from_daydata(
         if df.empty:
             continue
 
-        # Get close at entry time
-        mask = df.index.strftime("%H:%M") == entry_time
-        rows = df[mask]
+        # Get close at entry time — Timestamp comparison (no strftime)
+        if df.empty:
+            continue
+        date_str  = df.index[0].strftime("%Y-%m-%d")
+        entry_ts  = pd.Timestamp(f"{date_str} {entry_time}:59")
+        entry_ts0 = pd.Timestamp(f"{date_str} {entry_time}:00")
+        rows = df[(df.index >= entry_ts0) & (df.index <= entry_ts)]
         if rows.empty:
-            # Fallback: closest time at or before entry
-            before = df[df.index.strftime("%H:%M") <= entry_time]
+            before = df[df.index <= entry_ts]
             if before.empty:
                 continue
             price = float(before["close"].iloc[-1])
         else:
-            price = float(rows["close"].iloc[0])
+            price = float(rows["close"].iloc[-1])
 
         if price <= 0:
             continue

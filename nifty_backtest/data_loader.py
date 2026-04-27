@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PathConfig:
     """Configure folder paths for local data."""
-    base_path: str = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.4.9\breeze_data"
+    base_path: str = r"C:\Users\Admin\Downloads\BreezeDownloader-v1.5.0\breeze_data"
 
     @property
     def cache_dir(self) -> Path:
