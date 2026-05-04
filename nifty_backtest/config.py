@@ -30,11 +30,11 @@ class StrategyParams:
 
     # ── Stop Loss Percentages ──────────────────
     # SL = sell_premium * sl_pct + sl_buffer, then rounded UP to nearest 5
-    sl_pct_vix_lt12:        float = 0.40  # VIX < 12
-    sl_pct_vix_12_16_calm:  float = 0.40  # VIX 12-16, intraday VIX move ≤ threshold
-    sl_pct_vix_12_16_volatile: float = 0.25  # VIX 12-16, intraday VIX move > threshold
-    sl_pct_vix_16_20:       float = 0.25  # VIX 16-20
-    sl_pct_vix_gt20:        float = 0.15  # VIX > 20
+    sl_pct_vix_r1:          float = 0.40  # VIX < vix_low
+    sl_pct_vix_r2_calm:     float = 0.40  # VIX vix_low–vix_mid_low, intraday move ≤ threshold
+    sl_pct_vix_r2_volatile: float = 0.25  # VIX vix_low–vix_mid_low, intraday move > threshold
+    sl_pct_vix_r3:          float = 0.25  # VIX vix_mid_low–vix_mid_high
+    sl_pct_vix_r4:          float = 0.15  # VIX > vix_mid_high
     sl_buffer:              float = 5.0   # Flat buffer (rupees) added after % calc
 
     # ── ATR Trailing (surviving sell leg) ──────
@@ -53,9 +53,6 @@ class StrategyParams:
     # ── Lot Size ───────────────────────────────
     lot_size: int = 75                # NIFTY lot size (verify current NSE lot size)
 
-
-    # ── Slippage ───────────────────────────────────────────────────────
-    slippage_pct: float = 0.001   # 0.1% slippage on exits. e.g. SL=145 → actual exit=145.145
     # ── Expiry ─────────────────────────────────
     expiry_weekday: int = 3           # 0=Mon … 3=Thu (NIFTY weekly expiry = Thursday)
 
@@ -64,7 +61,7 @@ class StrategyParams:
             f"ATM[{self.atm_scan_start}-{self.atm_scan_end} maxdiff={self.max_premium_diff}] "
             f"Hedge={self.hedge_pct*100:.0f}% VIXthr={self.vix_intraday_threshold}% "
             f"ATR[{self.atr_timeframe},p{self.atr_period},x{self.atr_multiplier}] "
-            f"Step={self.hedge_trail_step} EOD={self.eod_exit_time} Slip={self.slippage_pct*100:.2f}%"
+            f"Step={self.hedge_trail_step} EOD={self.eod_exit_time}"
         )
 
     def to_dict(self):
@@ -73,22 +70,22 @@ class StrategyParams:
             "atm_scan_end": self.atm_scan_end,
             "max_premium_diff": self.max_premium_diff,
             "hedge_pct": self.hedge_pct,
+            "vix_low": self.vix_low,
+            "vix_mid_low": self.vix_mid_low,
+            "vix_mid_high": self.vix_mid_high,
             "vix_intraday_threshold": self.vix_intraday_threshold,
-            "vix_low":                  self.vix_low,
-            "vix_mid_low":              self.vix_mid_low,
-            "vix_mid_high":             self.vix_mid_high,
-            "sl_pct_vix_lt12":          self.sl_pct_vix_lt12,
-            "sl_pct_vix_12_16_calm":    self.sl_pct_vix_12_16_calm,
-            "sl_pct_vix_12_16_volatile":self.sl_pct_vix_12_16_volatile,
-            "sl_pct_vix_16_20":         self.sl_pct_vix_16_20,
-            "sl_pct_vix_gt20":          self.sl_pct_vix_gt20,
+            "sl_pct_vix_r1": self.sl_pct_vix_r1,
+            "sl_pct_vix_r2_calm": self.sl_pct_vix_r2_calm,
+            "sl_pct_vix_r2_volatile": self.sl_pct_vix_r2_volatile,
+            "sl_pct_vix_r3": self.sl_pct_vix_r3,
+            "sl_pct_vix_r4": self.sl_pct_vix_r4,
+            "sl_buffer": self.sl_buffer,
             "atr_timeframe": self.atr_timeframe,
             "atr_period": self.atr_period,
             "atr_multiplier": self.atr_multiplier,
             "hedge_trail_step": self.hedge_trail_step,
             "eod_exit_time": self.eod_exit_time,
             "lot_size": self.lot_size,
-            "slippage_pct": self.slippage_pct,
         }
 
 
@@ -114,26 +111,12 @@ class GridConfig:
     # VIX intraday trigger
     vix_intraday_thresholds: List[float] = field(default_factory=lambda: [2.0, 3.0, 4.0])
 
-    # VIX regime boundaries (for grid search)
-    vix_lows:      List[float] = field(default_factory=lambda: [12.0])
-    vix_mid_lows:  List[float] = field(default_factory=lambda: [16.0])
-    vix_mid_highs: List[float] = field(default_factory=lambda: [20.0])
-
-    # SL % per VIX regime (for grid search)
-    sl_pct_lt12_list:        List[float] = field(default_factory=lambda: [0.40])
-    sl_pct_12_16_calm_list:  List[float] = field(default_factory=lambda: [0.40])
-    sl_pct_12_16_vol_list:   List[float] = field(default_factory=lambda: [0.25])
-    sl_pct_16_20_list:       List[float] = field(default_factory=lambda: [0.25])
-    sl_pct_gt20_list:        List[float] = field(default_factory=lambda: [0.15])
-
     # ATR trailing
-    atr_timeframes:   List[str]   = field(default_factory=lambda: ["1min", "3min", "5min", "15min"])  # supported: 1min,3min,5min,15min,30min
+    atr_timeframes:   List[str]   = field(default_factory=lambda: ["1min", "5min", "15min"])
     atr_periods:      List[int]   = field(default_factory=lambda: [7, 14, 21])
     atr_multipliers:  List[float] = field(default_factory=lambda: [1.0, 1.5, 2.0])
 
     # Hedge step trail
-    slippage_pcts: List[float] = field(default_factory=lambda: [0.0, 0.001, 0.002])  # 0%, 0.1%, 0.2%
-
     hedge_trail_steps: List[float] = field(default_factory=lambda: [2.0, 3.0, 4.0])
 
     # EOD exit
@@ -145,11 +128,7 @@ class GridConfig:
             self.atm_scan_starts, self.atm_scan_ends, self.max_premium_diffs,
             self.hedge_pcts, self.vix_intraday_thresholds,
             self.atr_timeframes, self.atr_periods, self.atr_multipliers,
-            self.slippage_pcts, self.hedge_trail_steps, self.eod_exit_times,
-            self.vix_lows, self.vix_mid_lows, self.vix_mid_highs,
-            self.sl_pct_lt12_list, self.sl_pct_12_16_calm_list,
-            self.sl_pct_12_16_vol_list, self.sl_pct_16_20_list,
-            self.sl_pct_gt20_list,
+            self.hedge_trail_steps, self.eod_exit_times,
         ]:
             count *= len(lst)
         return count

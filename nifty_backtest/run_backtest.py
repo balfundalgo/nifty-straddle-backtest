@@ -37,11 +37,11 @@ EOD_EXIT_TIME           = "15:20"
 LOT_SIZE                = 75
 SLIPPAGE_PCT            = 0.001
 SL_BUFFER               = 5.0
-SL_PCT_LT12             = 0.40
-SL_PCT_12_16_CALM       = 0.40
-SL_PCT_12_16_VOLATILE   = 0.25
-SL_PCT_16_20            = 0.25
-SL_PCT_GT20             = 0.15
+SL_PCT_VIX_R1           = 0.40
+SL_PCT_VIX_R2_CALM      = 0.40
+SL_PCT_VIX_R2_VOLATILE  = 0.25
+SL_PCT_VIX_R3           = 0.25
+SL_PCT_VIX_R4           = 0.15
 
 # Grid search ranges
 # Keys MUST match StrategyParams attribute names exactly
@@ -50,8 +50,8 @@ GRID = {
     "atr_period":        [7, 14, 21],
     "atr_multiplier":    [1.0, 1.5, 2.0],
     "eod_exit_time":     ["15:15", "15:20", "15:25"],
-    "sl_pct_vix_lt12":   [0.35, 0.40, 0.45],
-    "sl_pct_vix_gt20":   [0.10, 0.15, 0.20],
+    "sl_pct_vix_r1":   [0.35, 0.40, 0.45],
+    "sl_pct_vix_r4":   [0.10, 0.15, 0.20],
     # Add/remove grid params as needed. Available keys:
     # atr_timeframe, atr_period, atr_multiplier, eod_exit_time,
     # sl_pct_vix_lt12, sl_pct_vix_12_16_calm, sl_pct_vix_12_16_volatile,
@@ -131,11 +131,11 @@ def make_params(**overrides) -> StrategyParams:
         lot_size                = LOT_SIZE,
         slippage_pct            = SLIPPAGE_PCT,
         sl_buffer               = SL_BUFFER,
-        sl_pct_vix_lt12         = SL_PCT_LT12,
-        sl_pct_vix_12_16_calm   = SL_PCT_12_16_CALM,
-        sl_pct_vix_12_16_volatile = SL_PCT_12_16_VOLATILE,
-        sl_pct_vix_16_20        = SL_PCT_16_20,
-        sl_pct_vix_gt20         = SL_PCT_GT20,
+        sl_pct_vix_r1           = SL_PCT_VIX_R1,
+        sl_pct_vix_r2_calm      = SL_PCT_VIX_R2_CALM,
+        sl_pct_vix_r2_volatile  = SL_PCT_VIX_R2_VOLATILE,
+        sl_pct_vix_r3           = SL_PCT_VIX_R3,
+        sl_pct_vix_r4           = SL_PCT_VIX_R4,
     )
     for k, v in overrides.items():
         setattr(p, k, v)

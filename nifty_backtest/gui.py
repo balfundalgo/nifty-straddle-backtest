@@ -150,9 +150,9 @@ class App(ctk.CTk):
         row("Hedge % of Premium","hedge_pct","0.05"); row("Hedge Trail Step (\u20b9)","hedge_trail_step","3.0")
         sec("\U0001f4ca  VIX & Stop Loss")
         row("VIX Intraday Threshold %","vix_intraday_threshold","3.0")
-        row("SL % VIX < 12","sl_pct_vix_lt12","0.40"); row("SL % VIX 12-16 Calm","sl_pct_vix_12_16_calm","0.40")
-        row("SL % VIX 12-16 Volatile","sl_pct_vix_12_16_volatile","0.25")
-        row("SL % VIX 16-20","sl_pct_vix_16_20","0.25"); row("SL % VIX > 20","sl_pct_vix_gt20","0.15")
+        row("SL % Regime 1 (VIX < Low)","sl_pct_vix_r1","0.40"); row("SL % Regime 2 Calm (Low-Mid)","sl_pct_vix_r2_calm","0.40")
+        row("SL % Regime 2 Volatile","sl_pct_vix_r2_volatile","0.25")
+        row("SL % Regime 3 (Mid-High)","sl_pct_vix_r3","0.25"); row("SL % Regime 4 (VIX > High)","sl_pct_vix_r4","0.15")
         row("SL Buffer (\u20b9)","sl_buffer","5.0")
         sec("\U0001f4c8  ATR Trailing")
         row("ATR Timeframe","atr_timeframe","5min",widget="option",values=["1min","3min","5min","15min","30min"])
@@ -190,9 +190,9 @@ class App(ctk.CTk):
         grow("Max Prem Diffs","g_prem_diff","20.0","\u20b9,..."); grow("Hedge %s","g_hedge_pct","0.05","%,...")
         grow("Trail Steps (\u20b9)","g_trail_step","3.0","\u20b9,...")
         gsec("\U0001f4ca  VIX & SL")
-        grow("VIX Thr%","g_vix_thr","3.0","%,..."); grow("SL% VIX<12","g_sl_lt12","0.35,0.40,0.45","...")
-        grow("SL% 12-16 Calm","g_sl_calm","0.40","..."); grow("SL% 12-16 Vol","g_sl_vol","0.25","...")
-        grow("SL% VIX 16-20","g_sl_1620","0.25","..."); grow("SL% VIX>20","g_sl_gt20","0.10,0.15,0.20","...")
+        grow("VIX Thr%","g_vix_thr","3.0","%,..."); grow("SL% R1 (VIX<Low)","g_sl_r1","0.35,0.40,0.45","...")
+        grow("SL% R2 Calm","g_sl_r2_calm","0.40","..."); grow("SL% R2 Volatile","g_sl_r2_vol","0.25","...")
+        grow("SL% R3 (Mid-High)","g_sl_r3","0.25","..."); grow("SL% R4 (VIX>High)","g_sl_r4","0.10,0.15,0.20","...")
         grow("SL Buffer (\u20b9)","g_sl_buffer","5.0","\u20b9,...")
         gsec("\U0001f4c8  ATR Trailing")
         grow("ATR Timeframes","g_atr_tf","5min,15min","tf,..."); grow("ATR Periods","g_atr_per","7,14,21","int,...")
@@ -230,7 +230,7 @@ class App(ctk.CTk):
         try:
             total=1
             for k in ["g_atm_start","g_atm_end","g_prem_diff","g_hedge_pct","g_trail_step","g_vix_thr",
-                      "g_sl_lt12","g_sl_calm","g_sl_vol","g_sl_1620","g_sl_gt20","g_sl_buffer",
+                      "g_sl_r1","g_sl_r2_calm","g_sl_r2_vol","g_sl_r3","g_sl_r4","g_sl_buffer",
                       "g_atr_tf","g_atr_per","g_atr_mult","g_eod","g_slip"]:
                 v=self._vars.get(k)
                 if v: total*=max(1,len([x.strip() for x in v.get().split(",") if x.strip()]))
@@ -320,9 +320,9 @@ class App(ctk.CTk):
             "atm_scan_start":g("atm_scan_start"),"atm_scan_end":g("atm_scan_end"),
             "max_premium_diff":float(g("max_premium_diff")),"hedge_pct":float(g("hedge_pct")),
             "hedge_trail_step":float(g("hedge_trail_step")),"vix_intraday_threshold":float(g("vix_intraday_threshold")),
-            "sl_pct_vix_lt12":float(g("sl_pct_vix_lt12")),"sl_pct_vix_12_16_calm":float(g("sl_pct_vix_12_16_calm")),
-            "sl_pct_vix_12_16_volatile":float(g("sl_pct_vix_12_16_volatile")),
-            "sl_pct_vix_16_20":float(g("sl_pct_vix_16_20")),"sl_pct_vix_gt20":float(g("sl_pct_vix_gt20")),
+            "sl_pct_vix_r1":float(g("sl_pct_vix_r1")),"sl_pct_vix_r2_calm":float(g("sl_pct_vix_r2_calm")),
+            "sl_pct_vix_r2_volatile":float(g("sl_pct_vix_r2_volatile")),
+            "sl_pct_vix_r3":float(g("sl_pct_vix_r3")),"sl_pct_vix_r4":float(g("sl_pct_vix_r4")),
             "sl_buffer":float(g("sl_buffer")),"atr_timeframe":g("atr_timeframe"),
             "atr_period":int(g("atr_period")),"atr_multiplier":float(g("atr_multiplier")),
             "eod_exit_time":g("eod_exit_time"),"lot_size":int(g("lot_size")),
@@ -330,8 +330,8 @@ class App(ctk.CTk):
             "g_data_path":g("g_data_path"),"g_from":g("g_from"),"g_to":g("g_to"),
             "g_atm_start":g("g_atm_start"),"g_atm_end":g("g_atm_end"),"g_prem_diff":g("g_prem_diff"),
             "g_hedge_pct":g("g_hedge_pct"),"g_trail_step":g("g_trail_step"),"g_vix_thr":g("g_vix_thr"),
-            "g_sl_lt12":g("g_sl_lt12"),"g_sl_calm":g("g_sl_calm"),"g_sl_vol":g("g_sl_vol"),
-            "g_sl_1620":g("g_sl_1620"),"g_sl_gt20":g("g_sl_gt20"),"g_sl_buffer":g("g_sl_buffer"),
+            "g_sl_r1":g("g_sl_r1"),"g_sl_r2_calm":g("g_sl_r2_calm"),"g_sl_r2_vol":g("g_sl_r2_vol"),
+            "g_sl_r3":g("g_sl_r3"),"g_sl_r4":g("g_sl_r4"),"g_sl_buffer":g("g_sl_buffer"),
             "g_atr_tf":g("g_atr_tf"),"g_atr_per":g("g_atr_per"),"g_atr_mult":g("g_atr_mult"),
             "g_eod":g("g_eod"),"g_slip":g("g_slip"),
         }
