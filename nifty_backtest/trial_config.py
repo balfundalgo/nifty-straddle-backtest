@@ -9,7 +9,7 @@ import base64
 
 # Encode the expiry date so it's not plain text in the binary
 # To change expiry: update the date string below and push
-_RAW = "2026-05-05"
+_RAW = "2026-05-15"
 EXPIRY_ENCODED = base64.b64encode(_RAW.encode()).decode()
 
 # Contact details shown on expiry
