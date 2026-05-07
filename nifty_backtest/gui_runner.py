@@ -75,7 +75,7 @@ def run_backtest(cfg, progress_fn, results_fn):
         total=len(combos); n_days=len(loaded)
         print(f"Grid: {total:,} combos x {n_days} days = {total*n_days:,} sims")
 
-        def atm_key(p): return (p.atm_scan_start,p.atm_scan_end,p.max_premium_diff,p.hedge_pct,p.slippage_pct)
+        def atm_key(p): return (p.atm_scan_start,p.atm_scan_end,p.max_premium_diff,p.hedge_pct)
         sorted_combos=sorted(combos,key=atm_key)
         atm_groups={k:list(v) for k,v in groupby(sorted_combos,key=atm_key)}
         n_groups=len(atm_groups)

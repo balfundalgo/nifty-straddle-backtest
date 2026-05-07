@@ -52,6 +52,7 @@ class StrategyParams:
 
     # ── Lot Size ───────────────────────────────
     lot_size: int = 75                # NIFTY lot size (verify current NSE lot size)
+    slippage_pct: float = 0.001       # Slippage as fraction of premium (0.001 = 0.1%)
 
     # ── Expiry ─────────────────────────────────
     expiry_weekday: int = 3           # 0=Mon … 3=Thu (NIFTY weekly expiry = Thursday)
@@ -86,6 +87,7 @@ class StrategyParams:
             "hedge_trail_step": self.hedge_trail_step,
             "eod_exit_time": self.eod_exit_time,
             "lot_size": self.lot_size,
+            "slippage_pct": self.slippage_pct,
         }
 
 
