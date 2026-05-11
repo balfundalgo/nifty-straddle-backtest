@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Backtest",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backtest_engine.py",
+            "args": ["--config", "config.json"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/venv/Scripts/python.exe"
+        }
+    ]
+}

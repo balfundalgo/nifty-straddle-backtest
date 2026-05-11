@@ -1,0 +1,41 @@
+{
+  "spot_data_dir": "C:\\Users\\Admin\\Downloads\\BreezeDownloader-v1.5.0\\breeze_data\\NIFTY_SPOT_1SEC",
+  "vix_data_dir": "C:\\Users\\Admin\\Downloads\\BreezeDownloader-v1.5.0\\breeze_data\\INDVIX_1SEC",
+  "options_data_dir": "C:\\Users\\Admin\\Downloads\\BreezeDownloader-v1.5.0\\breeze_data\\NIFTY_OPTIONS_1SEC",
+  "output_dir": "./results",
+
+  "start_date": "2026-04-01",
+  "end_date": "2026-05-10",
+
+  "scan_start_time": "09:16:00",
+  "scan_end_time": "09:18:00",
+  "nifty_strike_interval": 50,
+
+  "hedge_multiplier": 1.5,
+
+  "vix_ranges": [
+    {"vix_low": 5, "vix_high": 30, "sl_pct": 40}
+  ],
+
+  "vix_spike_enabled": true,
+  "vix_spike_threshold_pct": 3.0,
+  "vix_spike_new_sl_pct": 30.0,
+
+  "exit_time": "14:45:00",
+
+  "atr_sold_timeframe_minutes": 5,
+  "atr_sold_period": 21,
+  "atr_sold_multiplier": 2.0,
+  "atr_hedge_timeframe_minutes": 1,
+  "atr_hedge_period": 21,
+  "atr_hedge_multiplier": 3.0,
+
+  "max_trades_per_day": 1,
+  "max_daily_loss_pct": 2.0,
+  "capital": 1000000,
+  "num_lots": 1,
+  "slippage_pct": 0.001,
+
+  "convert_to_parquet": true,
+  "log_level": "INFO"
+}

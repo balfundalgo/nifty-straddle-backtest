@@ -1,0 +1,52 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.3.0
+
+      - name: Build EXE
+        run: |
+          pyinstaller `
+            --onefile `
+            --console `
+            --name "BalfundStraddleBacktest" `
+            --hidden-import pandas `
+            --hidden-import numpy `
+            --hidden-import pyarrow `
+            --hidden-import pyarrow.parquet `
+            --hidden-import tqdm `
+            --hidden-import rich `
+            --hidden-import rich.console `
+            --hidden-import rich.table `
+            --hidden-import rich.panel `
+            --hidden-import rich.progress `
+            --hidden-import rich.box `
+            --collect-all pyarrow `
+            backtest_engine.py
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BalfundStraddleBacktest-Windows
+          path: dist/BalfundStraddleBacktest.exe
+          retention-days: 30
